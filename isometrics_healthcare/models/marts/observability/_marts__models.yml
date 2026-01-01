@@ -1,0 +1,121 @@
+version: 2
+
+models:
+  - name: fct_clinical_quality_metrics
+    description: >
+      Daily clinical quality metrics per hospital.
+      Includes: readmission rates, mortality rates, length of stay, patient risk distribution.
+      Used for CMS quality reporting and internal performance tracking.
+    meta:
+      owner: "clinical-analytics@company.com"
+      sla_hours: 4
+      contains_phi: false
+    columns:
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: metric_date
+        description: "Date of metric calculation"
+        tests:
+          - not_null
+      - name: readmission_rate_30day_pct
+        description: "30-day readmission rate (CMS measure)"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+      - name: mortality_rate_pct
+        description: "In-hospital mortality rate"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+      - name: avg_length_of_stay
+        description: "Average length of stay in days"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 30
+
+  - name: fct_financial_performance
+    description: >
+      Daily financial performance metrics per hospital.
+      Includes: collections, denials, days in AR, payer mix.
+      Used for revenue cycle management and CFO reporting.
+    meta:
+      owner: "finance-analytics@company.com"
+      sla_hours: 4
+      contains_phi: false
+    columns:
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: metric_date
+        tests:
+          - not_null
+      - name: net_collection_rate_pct
+        description: "Net collection rate (target: >95%)"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+      - name: denial_rate_pct
+        description: "Claim denial rate (target: <10%)"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+      - name: avg_days_in_ar
+        description: "Average days in accounts receivable (target: <45 days)"
+
+  - name: fct_operational_metrics
+    description: >
+      Daily operational metrics per hospital.
+      Includes: volume by type, bed utilization, staffing, patient flow.
+      Used for capacity planning and operations management.
+    meta:
+      owner: "operations-analytics@company.com"
+      sla_hours: 2
+      contains_phi: false
+    columns:
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: metric_date
+        tests:
+          - not_null
+      - name: bed_occupancy_rate_pct
+        description: "Bed occupancy rate (target: 75-85%)"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 150  # Can exceed 100% with hallway beds
+
+  - name: fct_provider_performance
+    description: >
+      Provider-level performance metrics.
+      Includes: volume, quality, productivity, patient complexity.
+      Used for provider credentialing and performance reviews.
+    meta:
+      owner: "clinical-analytics@company.com"
+      sla_hours: 24
+      contains_phi: false
+      sensitive: true  # Contains provider performance data
+    columns:
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: provider_id
+        tests:
+          - not_null
+      - name: readmission_rate_pct
+        description: "Provider's 30-day readmission rate"
+      - name: productivity_category
+        description: "Volume classification"
+        tests:
+          - accepted_values:
+              values: ['High Volume', 'Medium Volume', 'Low Volume']
