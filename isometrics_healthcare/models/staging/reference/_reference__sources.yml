@@ -1,0 +1,47 @@
+version: 2
+
+sources:
+  - name: reference
+    description: "Reference/lookup tables - No PHI"
+    database: isometrics_dev
+    schema: raw_phi
+
+    tables:
+      - name: raw_diagnoses
+        description: "ICD-10 diagnosis codes"
+        columns:
+          - name: diagnosis_code
+            description: "ICD-10 code"
+            tests:
+              - not_null
+              - unique
+          - name: diagnosis_description
+            tests:
+              - not_null
+
+      - name: raw_procedures
+        description: "CPT procedure codes"
+        columns:
+          - name: procedure_code
+            description: "CPT code"
+            tests:
+              - not_null
+              - unique
+          - name: procedure_description
+            tests:
+              - not_null
+
+      - name: raw_payers
+        description: "Insurance payer/plan master data"
+        columns:
+          - name: payer_id
+            tests:
+              - not_null
+              - unique
+          - name: payer_name
+            tests:
+              - not_null
+          - name: payer_type
+            tests:
+              - accepted_values:
+                  values: ['Government', 'Commercial', 'Self-Pay']
