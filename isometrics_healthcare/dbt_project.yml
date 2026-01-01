@@ -1,0 +1,92 @@
+name: 'isometrics_healthcare'
+version: '1.0.0'
+config-version: 2
+
+profile: 'isometrics_healthcare'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Healthcare-specific variables
+vars:
+  project_name: 'IsoMetrics Healthcare'
+  start_date: '2023-01-01'
+  hipaa_compliant: true
+  phi_encryption_required: true
+
+# Model configurations
+models:
+  isometrics_healthcare:
+    +materialized: view
+    +on_schema_change: "fail"
+    +meta:
+      contains_phi: false  # Default: no PHI unless specified
+
+    staging:
+      +materialized: view
+      +schema: staging
+      +tags: ['staging', 'bronze']
+
+      healthcare:
+        +tags: ['staging', 'bronze', 'healthcare']
+        +meta:
+          owner: "healthcare-data-team@company.com"
+
+      reference:
+        +tags: ['staging', 'bronze', 'reference']
+        +meta:
+          owner: "data-engineering@company.com"
+
+    intermediate:
+      +materialized: ephemeral
+      +schema: intermediate
+      +tags: ['intermediate', 'silver']
+
+    marts:
+      +materialized: table
+      +schema: marts
+      +tags: ['marts', 'gold']
+
+      core:
+        +tags: ['marts', 'gold', 'core', 'daily']
+        +meta:
+          sla_hours: 4
+
+      clinical:
+        +tags: ['marts', 'gold', 'clinical', 'daily']
+        +meta:
+          sla_hours: 2
+          contains_phi: false  # De-identified for analytics
+
+      financial:
+        +tags: ['marts', 'gold', 'financial', 'daily']
+        +meta:
+          sla_hours: 4
+
+      operational:
+        +tags: ['marts', 'gold', 'operational', 'hourly']
+        +meta:
+          sla_hours: 1
+
+snapshots:
+  isometrics_healthcare:
+    +target_schema: snapshots
+
+seeds:
+  isometrics_healthcare:
+    +schema: seeds
+    +quote_columns: false
+
+tests:
+  isometrics_healthcare:
+    +store_failures: true
+    +schema: test_failures

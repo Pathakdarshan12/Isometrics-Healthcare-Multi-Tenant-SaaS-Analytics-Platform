@@ -1,0 +1,21 @@
+# dbt
+dbt-core
+dbt-snowflake
+
+# Data generation
+pandas
+numpy
+Faker
+faker-healthcare-system
+
+# Monitoring dashboard
+streamlit
+plotly
+snowflake-connector-python
+
+# Code quality
+sqlfluff
+sqlfluff-templater-dbt
+
+# Testing
+pytest
