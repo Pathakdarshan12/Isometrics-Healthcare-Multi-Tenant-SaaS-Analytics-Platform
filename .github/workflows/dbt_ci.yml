@@ -1,0 +1,123 @@
+#Why this matters:**
+#- Automated testing prevents bad code from reaching production
+#- Slim CI = Only tests models you changed (fast!)
+#- Forces developers to pass tests before merge
+#- Before Running go to repository -> Setting -> Secrets & Variables -> Add variables
+name: dbt CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  dbt-test:
+    runs-on: ubuntu-latest
+
+    # Add timeout to prevent hung jobs
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      # Cache pip dependencies for faster runs
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dbt
+        run: |
+          pip install dbt-snowflake==1.7.0
+
+      - name: Setup dbt profile
+        run: |
+          mkdir -p ~/.dbt
+          cat << EOF > ~/.dbt/profiles.yml
+          isometrics_healthcare:
+            target: ci
+            outputs:
+              ci:
+                type: snowflake
+                account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+                user: ${{ secrets.SNOWFLAKE_USER }}
+                password: ${{ secrets.SNOWFLAKE_PASSWORD }}
+                role: ${{ secrets.SNOWFLAKE_ROLE }}
+                database: ${{ secrets.SNOWFLAKE_DATABASE }}
+                warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+                schema: dbt_ci_${{ github.run_id }}
+                threads: 4
+          EOF
+
+      - name: Verify secrets are set
+        run: |
+          if [ -z "${{ secrets.SNOWFLAKE_PASSWORD }}" ]; then
+            echo "❌ ERROR: SNOWFLAKE_PASSWORD secret not set!"
+            exit 1
+          fi
+          echo "✅ All required secrets are configured"
+
+      - name: Install dbt packages
+        run: |
+          cd isometrics_healthcare
+          dbt deps
+
+      - name: Run dbt compile (check syntax)
+        run: |
+          cd isometrics_healthcare
+          dbt compile --fail-fast
+
+      - name: Run dbt test (all models)
+        run: |
+          cd isometrics_healthcare
+          dbt test
+
+      - name: Check for RLS on all marts
+        run: |
+          cd isometrics_healthcare
+          dbt test --select test_type:singular,test_name:assert_rls_applied_to_marts
+
+      - name: Generate dbt docs
+        run: |
+          cd isometrics_healthcare
+          dbt docs generate
+
+      # Upload test results if something fails
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: dbt-test-results
+          path: isometrics_healthcare/target/run_results.json
+
+      - name: Comment PR with test results
+        if: success()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ dbt tests passed! Safe to merge.'
+            })
+
+      - name: Comment PR with failure
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ dbt tests failed. Check the Actions tab for details.'
+            })
