@@ -1,8 +1,3 @@
-#Why this matters:**
-#- Automated testing prevents bad code from reaching production
-#- Slim CI = Only tests models you changed (fast!)
-#- Forces developers to pass tests before merge
-#- Before Running go to repository -> Setting -> Secrets & Variables -> Add variables
 name: dbt CI
 
 on:
@@ -92,58 +87,7 @@ jobs:
         run: |
           cd isometrics_healthcare
           dbt docs generate
-      
-      - name: 💬 Comment PR with results
-        if: always()
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const fs = require('fs');
-            
-            let comment = `## 🏥 IsoMetrics Healthcare - dbt CI Results\n\n`;
-            
-            try {
-              const runResults = JSON.parse(fs.readFileSync('./isometrics_healthcare/target/run_results.json'));
-              
-              const totalModels = runResults.results.length;
-              const failedModels = runResults.results.filter(r => r.status !== 'success').length;
-              const passedModels = totalModels - failedModels;
-              
-              comment += `| Metric | Value |\n`;
-              comment += `|--------|-------|\n`;
-              comment += `| Models Built | ${totalModels} |\n`;
-              comment += `| ✅ Passed | ${passedModels} |\n`;
-              comment += `| ❌ Failed | ${failedModels} |\n`;
-              comment += `| Status | ${failedModels === 0 ? '✅ **PASS**' : '❌ **FAIL**'} |\n\n`;
-              
-              if (failedModels > 0) {
-                comment += `### ❌ Failed Models:\n\n`;
-                runResults.results
-                  .filter(r => r.status !== 'success')
-                  .forEach(r => {
-                    comment += `- \`${r.unique_id}\`: ${r.message || 'Unknown error'}\n`;
-                  });
-                comment += `\n`;
-              }
-              
-              comment += `### 🔒 HIPAA Compliance Checks:\n\n`;
-              comment += `- ✅ RLS verification: PASSED\n`;
-              comment += `- ✅ PHI pattern scan: PASSED\n`;
-              comment += `- ✅ Cross-tenant isolation: VERIFIED\n\n`;
-              
-            } catch (error) {
-              comment += `⚠️ Could not parse run results: ${error.message}\n\n`;
-            }
-            
-            comment += `\n[View full logs](https://github.com/${{github.repository}}/actions/runs/${{github.run_id}})`;
-            
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
-      
+
       - name: 🧹 Cleanup CI schema
         if: always()
         run: |
