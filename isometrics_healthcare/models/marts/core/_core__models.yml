@@ -1,0 +1,23 @@
+version: 2
+
+models:
+  - name: fct_billing_transactions
+    description: "Billing Transactions"
+    columns:
+      - name: hospital_id
+        tests:
+          - not_null
+      - name: transaction_date
+        tests:
+          - not_null
+
+  - name: fct_encounters
+    description: "Fact Encounters"
+    columns:
+      - name: hospital_id
+        tests:
+            - not_null
+      - name: provider_id
+        tests:
+          - not_null
+          - unique

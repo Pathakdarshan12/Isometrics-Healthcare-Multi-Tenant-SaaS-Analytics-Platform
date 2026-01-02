@@ -25,7 +25,7 @@ models:
         description: "Clinical severity level"
         tests:
           - accepted_values:
-              values: ['Low', 'Medium', 'High', 'Critical']
+              values: ['Low', 'Critical', 'Moderate', 'High']
       - name: is_chronic
         description: "Flag indicating chronic condition"
 

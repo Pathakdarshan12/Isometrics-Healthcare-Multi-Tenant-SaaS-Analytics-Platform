@@ -1,0 +1,20 @@
+version: 2
+
+models:
+  - name: fct_clinical_quality_metrics
+    description: "Daily clinical quality metrics per hospital"
+    columns:
+      - name: hospital_id
+        tests:
+          - not_null
+      - name: metric_date
+        tests:
+          - not_null
+
+  - name: fct_provider_performance
+    description: "Provider-level performance scorecard"
+    columns:
+      - name: provider_id
+        tests:
+          - not_null
+          - unique

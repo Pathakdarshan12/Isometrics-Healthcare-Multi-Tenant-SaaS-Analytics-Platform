@@ -1,0 +1,12 @@
+version: 2
+
+models:
+  - name: fct_financial_performance
+    description: "Daily financial performance metrics"
+    columns:
+      - name: hospital_id
+        tests:
+          - not_null
+      - name: metric_date
+        tests:
+          - not_null

@@ -21,10 +21,10 @@ with source_freshness as (
     select
         'encounters' as table_name,
         hospital_id,
-        max(_loaded_at) as last_load_timestamp,
-        max(_source_updated_at) as last_source_update_timestamp,
+        max(loaded_at_timestamp) as last_load_timestamp,
+        max(source_updated_at_timestamp) as last_source_update_timestamp,
         datediff('minute', last_source_update_timestamp, last_load_timestamp) as freshness_lag_minutes
-    from {{ source('healthcare', 'raw_encounters') }}
+    from {{ ref('stg_healthcare__encounters') }}
     group by hospital_id
 
     union all
@@ -32,10 +32,10 @@ with source_freshness as (
     select
         'patients' as table_name,
         hospital_id,
-        max(_loaded_at) as last_load_timestamp,
+        max(loaded_at_timestamp) as last_load_timestamp,
         null as last_source_update_timestamp,
         null as freshness_lag_minutes
-    from {{ source('healthcare', 'raw_patients') }}
+    from {{ ref('stg_healthcare__patients') }}
     group by hospital_id
 
     union all
@@ -43,10 +43,10 @@ with source_freshness as (
     select
         'billing' as table_name,
         hospital_id,
-        max(_loaded_at) as last_load_timestamp,
+        max(loaded_at_timestamp) as last_load_timestamp,
         null as last_source_update_timestamp,
         null as freshness_lag_minutes
-    from {{ source('healthcare', 'raw_billing_transactions') }}
+    from {{ ref('stg_healthcare__billing_transactions') }}
     group by hospital_id
 ),
 

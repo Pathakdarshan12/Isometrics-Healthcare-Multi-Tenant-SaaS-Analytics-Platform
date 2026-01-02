@@ -72,11 +72,6 @@ final as (
         current_timestamp() as _dbt_updated_at
 
     from revenue_cycle
-
-    {% if is_incremental() %}
-        -- Process transactions from last 7 days (to catch status updates)
-        where transaction_date >= dateadd('day', -7, current_date())
-    {% endif %}
 )
 
 select * from final

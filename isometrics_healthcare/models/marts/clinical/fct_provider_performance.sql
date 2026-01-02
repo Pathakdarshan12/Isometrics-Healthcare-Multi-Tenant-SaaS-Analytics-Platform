@@ -30,7 +30,7 @@ base_metrics as (
         count(distinct case when encounter_type = 'Inpatient' then encounter_id end) as inpatient_encounters,
         count(distinct case when encounter_type = 'Emergency' then encounter_id end) as emergency_encounters,
 
-        sum(case when is_30day_readmission then 1 else 0 end) as readmissions_30day,
+        sum(case when is_30day_return then 1 else 0 end) as readmissions_30day,
         sum(case when is_mortality then 1 else 0 end) as mortality_count,
 
         avg(length_of_stay) as avg_length_of_stay,

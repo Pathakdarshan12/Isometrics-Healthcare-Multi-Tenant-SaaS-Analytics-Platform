@@ -14,6 +14,14 @@
   - delete+insert chosen over merge for performance
   - Partitioned by hospital_id + date for efficient deletes
   - Handles late-arriving data by deleting and re-inserting affected partitions
+
+     {% if is_incremental() %}
+        -- Incremental logic: Only process new or updated encounters
+        where loaded_at_timestamp > (
+            select max(loaded_at_timestamp)
+            from {{ this }}
+        )
+    {% endif %}
 */
 
 with enriched_encounters as (
@@ -88,13 +96,6 @@ final as (
 
     from enriched_encounters
 
-    {% if is_incremental() %}
-        -- Incremental logic: Only process new or updated encounters
-        where loaded_at_timestamp > (
-            select max(loaded_at_timestamp)
-            from {{ this }}
-        )
-    {% endif %}
 )
 
 select * from final

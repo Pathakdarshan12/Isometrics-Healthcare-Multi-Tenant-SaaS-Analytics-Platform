@@ -20,8 +20,8 @@ base_metrics as (
         count(distinct patient_id) as unique_patients,
 
         -- Readmissions
-        sum(case when is_30day_readmission then 1 else 0 end) as readmissions_30day,
-        sum(case when is_30day_return and not is_30day_readmission then 1 else 0 end) as returns_30day_non_readmit,
+        sum(case when is_30day_return then 1 else 0 end) as readmissions_30day,
+        sum(case when is_30day_return and not is_30day_return then 1 else 0 end) as returns_30day_non_readmit,
         count(distinct case when encounter_type = 'Inpatient' then encounter_id end) as inpatient_denominator,
 
         -- Mortality
@@ -38,7 +38,7 @@ base_metrics as (
         count(distinct case when patient_risk_category = 'Low Risk' then patient_id end) as low_risk_patients,
 
         -- Financial
-        sum(case when is_30day_readmission then total_charges else 0 end) as readmission_charges,
+        sum(case when is_30day_return then total_charges else 0 end) as readmission_charges,
 
         -- ED
         count(distinct case when is_emergency and is_7day_return then encounter_id end) as ed_7day_returns,
