@@ -95,7 +95,7 @@ jobs:
       # Upload test results if something fails
       - name: Upload test results
         if: failure()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: dbt-test-results
           path: isometrics_healthcare/target/run_results.json
