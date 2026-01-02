@@ -6,6 +6,8 @@
 name: dbt CI
 
 on:
+  push:
+    branches: [main]  # Production checks on main
   pull_request:
     branches: [main]
 
