@@ -1,3 +1,9 @@
+{{ config(
+    materialized='view',
+    schema='analysis',
+    tags=['analysis', 'performance']
+) }}
+
 /*
   Incremental Strategy Performance Benchmark
   Compares execution time and cost between:

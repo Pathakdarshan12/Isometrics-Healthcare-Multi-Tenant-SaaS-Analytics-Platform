@@ -54,6 +54,8 @@ CREATE SCHEMA IF NOT EXISTS METRICS
 CREATE SCHEMA IF NOT EXISTS AUDIT
   COMMENT = 'HIPAA audit trail and access logs';
 
+CREATE SCHEMA IF NOT EXISTS ISOMETRICS_DEV.ELEMENTARY;
+
 -- ============================================
 -- 3. CREATE WAREHOUSES
 -- ============================================
@@ -111,11 +113,60 @@ GRANT USAGE ON WAREHOUSE DBT_PROD_WH TO ROLE DBT_PROD_ROLE;
 GRANT USAGE ON WAREHOUSE DBT_CI_WH TO ROLE DBT_CI_ROLE;
 
 -- Grant database access (DEV)
+-- Database level permissions
 GRANT USAGE ON DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
 GRANT CREATE SCHEMA ON DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT MONITOR ON DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+
+-- Schema level permissions (existing schemas)
 GRANT USAGE ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
 GRANT CREATE TABLE ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
 GRANT CREATE VIEW ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT MONITOR ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+
+-- Schema level permissions (future schemas)
+GRANT USAGE ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT CREATE TABLE ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT CREATE VIEW ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT MONITOR ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+
+-- Table permissions (existing tables)
+GRANT SELECT ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT INSERT ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT UPDATE ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT DELETE ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT TRUNCATE ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT REFERENCES ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+
+-- Table permissions (future tables)
+GRANT SELECT ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT INSERT ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT UPDATE ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT DELETE ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT TRUNCATE ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT REFERENCES ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+
+-- View permissions (existing views)
+GRANT SELECT ON ALL VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT REFERENCES ON ALL VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+
+-- View permissions (future views)
+GRANT SELECT ON FUTURE VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT REFERENCES ON FUTURE VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+
+-- Materialized view permissions (if you use them)
+GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT SELECT ON FUTURE MATERIALIZED VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+
+-- Allow role to manage stages (for seeds and data loading)
+GRANT CREATE STAGE ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT CREATE STAGE ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+
+GRANT USAGE ON SCHEMA ISOMETRICS_DEV.ELEMENTARY TO ROLE DBT_DEV_ROLE;
+GRANT CREATE TABLE ON SCHEMA ISOMETRICS_DEV.ELEMENTARY TO ROLE DBT_DEV_ROLE;
+GRANT CREATE VIEW ON SCHEMA ISOMETRICS_DEV.ELEMENTARY TO ROLE DBT_DEV_ROLE;
+
+SHOW views IN SCHEMA ISOMETRICS_DEV.ELEMENTARY;
 
 -- Grant database access (PROD)
 GRANT USAGE ON DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
@@ -146,7 +197,7 @@ GRANT ALL ON FUTURE VIEWS IN DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
 
 -- Replace YOUR_PASSWORD with a strong password
 CREATE USER IF NOT EXISTS DBT_USER
-  PASSWORD = 'yourpassword'
+  PASSWORD = 'your@passwor'
   DEFAULT_ROLE = DBT_DEV_ROLE
   DEFAULT_WAREHOUSE = DBT_DEV_WH
   COMMENT = 'dbt service account';
@@ -321,160 +372,3 @@ CREATE TABLE IF NOT EXISTS RAW_PHI.raw_billing_transactions (
 
 -- Add clustering
 ALTER TABLE RAW_PHI.raw_billing_transactions CLUSTER BY (hospital_id, transaction_date);
-
--- ============================================
--- 3. CREATE HIPAA-COMPLIANT RLS POLICIES
--- ============================================
-SET HOSPITAL_ID = 'H001';
--- Policy 1: Hospital Isolation (Main RLS Policy)
-CREATE OR REPLACE ROW ACCESS POLICY hospital_isolation_policy
-AS (hospital_id VARCHAR) RETURNS BOOLEAN ->
-  CASE
-    -- ACCOUNTADMIN and SYSADMIN see everything (break-glass access)
-    WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN', 'SYSADMIN') THEN TRUE
-
-    -- Data engineers in DEV only
-    WHEN CURRENT_ROLE() = 'DBT_DEV_ROLE' AND
-         CURRENT_DATABASE() LIKE '%_DEV' THEN TRUE
-
-    -- HIPAA auditors - read-only, logged access
-    WHEN CURRENT_ROLE() = 'HIPAA_AUDITOR' THEN TRUE
-
-    -- Hospital-specific analyst roles
-    WHEN CURRENT_ROLE() LIKE 'HOSPITAL_%_ANALYST' THEN
-      hospital_id = REGEXP_REPLACE(CURRENT_ROLE(), 'HOSPITAL_(.*)_ANALYST', '\\1')
-
-    -- Generic hospital analyst (uses session variable)
-    WHEN CURRENT_ROLE() = 'HOSPITAL_ANALYST' THEN
-      hospital_id = $HOSPITAL_ID  -- Use session variable
-
-    -- Production dbt role (for deployments)
-    WHEN CURRENT_ROLE() = 'DBT_PROD_ROLE' AND
-         CURRENT_DATABASE() LIKE '%_PROD' THEN TRUE
-
-    -- Default: DENY (fail-secure)
-    ELSE FALSE
-  END
-COMMENT = 'HIPAA-compliant hospital isolation - All access logged';
-
--- Policy 2: PHI Access Control
-CREATE OR REPLACE ROW ACCESS POLICY phi_access_policy
-AS (hospital_id VARCHAR) RETURNS BOOLEAN ->
-  CASE
-    WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN', 'PHI_ADMIN', 'HIPAA_AUDITOR') THEN TRUE
-
-    WHEN CURRENT_ROLE() LIKE 'HOSPITAL_%_PHI_ANALYST' THEN
-      hospital_id = REGEXP_REPLACE(CURRENT_ROLE(), 'HOSPITAL_(.*)_PHI_ANALYST', '\\1')
-
-    ELSE FALSE
-  END
-COMMENT = 'Restricted PHI access - Requires explicit authorization';
-
--- Apply RLS policies
-ALTER TABLE raw_patients
-ADD ROW ACCESS POLICY phi_access_policy ON (hospital_id);
-
-ALTER TABLE raw_encounters
-ADD ROW ACCESS POLICY hospital_isolation_policy ON (hospital_id);
-
-ALTER TABLE raw_billing_transactions
-ADD ROW ACCESS POLICY hospital_isolation_policy ON (hospital_id);
-
-ALTER TABLE raw_providers
-ADD ROW ACCESS POLICY hospital_isolation_policy ON (hospital_id);
-
-ALTER TABLE raw_facilities
-ADD ROW ACCESS POLICY hospital_isolation_policy ON (hospital_id);
-
--- ============================================
--- 4. CREATE AUDIT SCHEMA & TABLES
--- ============================================
-
-USE SCHEMA AUDIT;
-
--- Access audit log (HIPAA requirement)
-CREATE TABLE IF NOT EXISTS access_audit_log (
-    audit_id NUMBER AUTOINCREMENT PRIMARY KEY,
-    access_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    user_name VARCHAR(255),
-    role_name VARCHAR(255),
-    database_name VARCHAR(255),
-    schema_name VARCHAR(255),
-    table_name VARCHAR(255),
-    query_text VARCHAR(10000),
-    rows_accessed NUMBER,
-    hospital_id VARCHAR(50),
-    session_id VARCHAR(255),
-    client_ip VARCHAR(50),
-    access_reason VARCHAR(1000)  -- Required for break-glass access
-) COMMENT = 'HIPAA audit trail - All PHI access logged';
-
--- Query history for compliance
-CREATE OR REPLACE VIEW query_audit_view AS
-SELECT
-    query_id,
-    query_text,
-    user_name,
-    role_name,
-    start_time,
-    end_time,
-    total_elapsed_time,
-    rows_produced,
-    database_name,
-    schema_name
-FROM snowflake.account_usage.query_history
-WHERE schema_name IN ('RAW_PHI', 'STAGING', 'MARTS')
-  AND start_time >= DATEADD('day', -90, CURRENT_TIMESTAMP())
-ORDER BY start_time DESC;
-
--- ============================================
--- 5. CREATE HOSPITAL-SPECIFIC ROLES (Examples)
--- ============================================
-
--- Create sample hospital analyst roles
-CREATE ROLE IF NOT EXISTS HOSPITAL_HOSP_0001_ANALYST COMMENT = 'Analyst role for Hospital HOSP_0001';
-
-CREATE ROLE IF NOT EXISTS HOSPITAL_HOSP_0002_ANALYST COMMENT = 'Analyst role for Hospital HOSP_0002';
-
--- Grant basic permissions
-GRANT USAGE ON DATABASE ISOMETRICS_DEV TO ROLE HOSPITAL_HOSP_0001_ANALYST;
-GRANT USAGE ON SCHEMA ISOMETRICS_DEV.STAGING TO ROLE HOSPITAL_HOSP_0001_ANALYST;
-GRANT USAGE ON SCHEMA ISOMETRICS_DEV.MARTS TO ROLE HOSPITAL_HOSP_0001_ANALYST;
-GRANT USAGE ON WAREHOUSE DBT_DEV_WH TO ROLE HOSPITAL_HOSP_0001_ANALYST;
-
--- Create HIPAA auditor role
-CREATE ROLE IF NOT EXISTS HIPAA_AUDITOR
-  COMMENT = 'Federal/regulatory auditor - read-only access with logging';
-
-GRANT USAGE ON DATABASE ISOMETRICS_DEV TO ROLE HIPAA_AUDITOR;
-GRANT USAGE ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE HIPAA_AUDITOR;
-GRANT SELECT ON ALL TABLES IN SCHEMA ISOMETRICS_DEV.AUDIT TO ROLE HIPAA_AUDITOR;
-GRANT USAGE ON WAREHOUSE DBT_DEV_WH TO ROLE HIPAA_AUDITOR;
-
--- ============================================
--- 6. VERIFICATION QUERIES
--- ============================================
-
--- Check RLS policies
-SHOW ROW ACCESS POLICIES;
-
--- Check table row access policies
-SELECT
-    policy_name,
-    ref_database_name,
-    ref_schema_name,
-    ref_entity_name,
-    ref_entity_domain
-FROM snowflake.account_usage.policy_references
-WHERE ref_entity_domain = 'TABLE'
-ORDER BY ref_schema_name, ref_entity_name;
-
--- Test data isolation
-USE ROLE ACCOUNTADMIN;
-SELECT hospital_id, COUNT(*) as patient_count
-FROM raw_patients
-GROUP BY hospital_id
-ORDER BY patient_count DESC
-LIMIT 10;
-
-SELECT 'Healthcare Snowflake setup complete!' AS status, 'Remember: All PHI access is audited and logged' AS reminder;

@@ -18,7 +18,7 @@ CREATE OR REPLACE FILE FORMAT healthcare_csv_format
   TRIM_SPACE = TRUE;
 
 -- Create stage
-CREATE OR REPLACE STAGE healthcare_data_stage
+CREATE STAGE IF NOT EXISTS healthcare_data_stage
   FILE_FORMAT = healthcare_csv_format
   COMMENT = 'Staging area for healthcare CSV files';
 
@@ -235,10 +235,6 @@ PURGE = FALSE;
 -- VERIFICATION
 -- ============================================
 
-SELECT 'Data Load Summary' AS summary
-UNION ALL
-SELECT '========================' AS separator
-UNION ALL;
 SELECT 'Hospitals' AS table_name, COUNT(*) AS row_count FROM raw_hospitals
 UNION ALL
 SELECT 'Patients', COUNT(*) FROM raw_patients
@@ -259,9 +255,6 @@ SELECT 'Billing Transactions', COUNT(*) FROM raw_billing_transactions
 ORDER BY table_name;
 
 -- Check data quality
-SELECT 'Data Quality Checks' AS summary;
-SELECT '========================' AS separator;
-
 -- Check for null hospital_ids (RLS violation!)
 SELECT 'Patients with NULL hospital_id' AS check_name,
        COUNT(*) AS violation_count
@@ -294,110 +287,3 @@ ORDER BY encounter_count DESC
 LIMIT 10;
 
 SELECT 'Healthcare data loaded successfully!' AS status;
-
--- ============================================
--- Load Generated Data into Snowflake
--- ============================================
-
-USE DATABASE ISOMETRICS_DEV;
-USE SCHEMA RAW;
-USE WAREHOUSE DBT_DEV_WH;
-
--- Create file format
-CREATE OR REPLACE FILE FORMAT csv_format
-  TYPE = 'CSV'
-  FIELD_DELIMITER = ','
-  SKIP_HEADER = 1
-  NULL_IF = ('NULL', 'null', '')
-  EMPTY_FIELD_AS_NULL = TRUE
-  FIELD_OPTIONALLY_ENCLOSED_BY = '"';
-
--- Create stage for file uploads
-CREATE OR REPLACE STAGE data_stage
-  FILE_FORMAT = csv_format;
-
--- Load data from stage into tables
-COPY INTO ISOMETRICS_DEV.RAW.raw_tenants(tenant_id, tenant_name, industry, plan_tier, signup_date, churn_date, mrr, status, segment, _loaded_at, _source_file)
-FROM (
-    SELECT
-        $1::VARCHAR(50)     AS tenant_id,
-        $2::VARCHAR(255)    AS tenant_name,
-        $3::VARCHAR(100)    AS industry,
-        $4::VARCHAR(50)     AS plan_tier,
-        $5::TIMESTAMP_NTZ   AS signup_date,
-        $6::TIMESTAMP_NTZ   AS churn_date,
-        $7::NUMBER(10,2)    AS mrr,
-        $8::VARCHAR(50)     AS status,
-        $9::VARCHAR(50)     AS segment,
-        CURRENT_TIMESTAMP() AS _loaded_at,
-        METADATA$FILENAME   AS _source_file
-    FROM @ISOMETRICS_DEV.RAW.data_stage/tenants.csv
-)
-FILE_FORMAT = csv_format
-ON_ERROR = 'CONTINUE';
-
-COPY INTO ISOMETRICS_DEV.RAW.raw_customers
-FROM (
-    SELECT
-        $1::VARCHAR(50),
-        $2::VARCHAR(50),
-        $3::VARCHAR(255),
-        $4::VARCHAR(100),
-        $5::VARCHAR(100),
-        $6::TIMESTAMP_NTZ,
-        $7::VARCHAR(50),
-        $8::NUMBER(10,2),
-        CURRENT_TIMESTAMP(),
-        METADATA$FILENAME
-    FROM @ISOMETRICS_DEV.RAW.data_stage/customers.csv
-)
-FILE_FORMAT = csv_format
-ON_ERROR = 'CONTINUE'
-FORCE = TRUE;
-
-COPY INTO ISOMETRICS_DEV.RAW.raw_products(product_id, tenant_id, product_name, category, price, is_active, _loaded_at, _source_file)
-FROM (
-    SELECT
-        $1::VARCHAR(50)  AS product_id,
-        $2::VARCHAR(50)  AS tenant_id,
-        $3::VARCHAR(255) AS product_name,
-        $4::VARCHAR(100) AS category,
-        $5::NUMBER(10,2) AS price,
-        $6::BOOLEAN      AS is_active,
-        CURRENT_TIMESTAMP() AS _loaded_at,
-        METADATA$FILENAME AS _source_file
-    FROM @ISOMETRICS_DEV.RAW.data_stage/products.csv
-)
-FILE_FORMAT = csv_format
-ON_ERROR = 'CONTINUE';
-
-COPY INTO ISOMETRICS_DEV.RAW.raw_orders(order_id, tenant_id, customer_id, product_id, order_date, quantity, amount, status, payment_method, shipping_country, _loaded_at, _source_file, _source_updated_at)
-FROM (
-    SELECT
-        $1::VARCHAR(50)      AS order_id,
-        $2::VARCHAR(50)      AS tenant_id,
-        $3::VARCHAR(50)      AS customer_id,
-        $4::VARCHAR(50)      AS product_id,
-        $5::TIMESTAMP_NTZ    AS order_date,
-        $6::NUMBER(10,0)     AS quantity,
-        $7::NUMBER(10,2)     AS amount,
-        $8::VARCHAR(50)      AS status,
-        $9::VARCHAR(50)      AS payment_method,
-        $10::VARCHAR(10)     AS shipping_country,
-        CURRENT_TIMESTAMP()  AS _loaded_at,
-        METADATA$FILENAME    AS _source_file,
-        CURRENT_TIMESTAMP()  AS _source_updated_at
-    FROM @ISOMETRICS_DEV.RAW.data_stage/orders.csv
-)
-FILE_FORMAT = csv_format
-ON_ERROR = 'CONTINUE';
-
--- Verify data loaded
-SELECT 'Tenants' AS table_name, COUNT(*) AS row_count FROM raw_tenants
-UNION ALL
-SELECT 'Customers', COUNT(*) FROM raw_customers
-UNION ALL
-SELECT 'Products', COUNT(*) FROM raw_products
-UNION ALL
-SELECT 'Orders', COUNT(*) FROM raw_orders;
--- ============================================
