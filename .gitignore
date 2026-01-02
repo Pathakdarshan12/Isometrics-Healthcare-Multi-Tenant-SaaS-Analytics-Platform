@@ -20,7 +20,7 @@ build/
 
 # IDEs
 .vscode/
-.idea/
+.idea/*
 *.swp
 *.swo
 *~
