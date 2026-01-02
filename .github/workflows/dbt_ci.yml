@@ -66,7 +66,7 @@ jobs:
 
       - name: dbt run (build changed models)
         run: |
-          cd dbt_project
+          cd isometrics_healthcare
           dbt run
 
       - name: dbt test (test changed models)
