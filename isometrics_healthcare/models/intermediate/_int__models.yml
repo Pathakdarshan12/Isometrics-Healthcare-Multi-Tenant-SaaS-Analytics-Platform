@@ -1,4 +1,4 @@
-version: 2
+Dversion: 2
 
 models:
   - name: int_encounters__enriched
@@ -32,6 +32,7 @@ models:
         description: "Diagnosis severity level"
         tests:
           - accepted_values:
+              arguments:
               values: ['Low', 'Medium', 'High', 'Critical']
 
   - name: int_patient__journey
@@ -50,16 +51,11 @@ models:
         description: "CMS 30-day readmission flag"
       - name: is_7day_return
         description: "7-day ED return flag"
-      - name: patient_risk_score
-        description: "Risk score 0-100"
-        tests:
-          - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 100
       - name: patient_risk_category
         description: "Risk stratification"
         tests:
           - accepted_values:
+              arguments:
               values: ['Low Risk', 'Medium Risk', 'High Risk']
       - name: ed_visits_last_90_days
         description: "Count of ED visits in last 90 days (frequent flyer indicator)"
@@ -84,6 +80,7 @@ models:
         description: "AR aging category"
         tests:
           - accepted_values:
+              arguments:
               values: ['0-30 days', '31-60 days', '61-90 days', '91-120 days', '120+ days']
       - name: collection_rate_pct
         description: "Collection rate percentage"

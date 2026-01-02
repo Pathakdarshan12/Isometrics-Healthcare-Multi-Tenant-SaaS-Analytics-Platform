@@ -1,6 +1,6 @@
 {{
   config(
-    materialized='ephemeral',
+    materialized='view',
     tags=['intermediate', 'silver', 'financial']
   )
 }}
