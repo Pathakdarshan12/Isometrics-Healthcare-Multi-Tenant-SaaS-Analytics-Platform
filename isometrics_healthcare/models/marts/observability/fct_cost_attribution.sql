@@ -18,8 +18,7 @@
   1. Grant IMPORTED PRIVILEGES on SNOWFLAKE database to your role
   2. Use snowflake.account_usage.query_history
   3. Use snowflake.account_usage.warehouse_metering_history
-*/
-with query_history as (
+  with query_history as (
     select
         query_id,
         query_text,
@@ -31,7 +30,8 @@ with query_history as (
     where start_time >= dateadd('day', -90, current_date())
       and database_name = current_database()
 ),
-daily_metrics as (
+*/
+with daily_metrics as (
     -- Estimate costs based on encounter volume as a proxy
     -- In production, replace this with actual query history
     select
