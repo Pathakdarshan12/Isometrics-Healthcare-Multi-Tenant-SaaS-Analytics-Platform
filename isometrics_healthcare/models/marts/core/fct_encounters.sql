@@ -57,7 +57,6 @@ final as (
         diagnosis_description,
         diagnosis_category,
         severity_level,
-        is_chronic as is_chronic_condition,
 
         -- Encounter Details
         encounter_type,

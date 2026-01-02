@@ -1,0 +1,94 @@
+version: 2
+
+models:
+  - name: int_encounters__enriched
+    description: >
+      Enriched encounter data joining all dimensional context.
+      Ephemeral model used as base for mart models.
+      Includes hospital, patient, provider, facility, and diagnosis details.
+    meta:
+      contains_phi: true
+      owner: "healthcare-data-team@company.com"
+    columns:
+      - name: encounter_id
+        description: "Unique encounter identifier"
+        tests:
+          - not_null
+          - unique
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: patient_id
+        tests:
+          - not_null
+      - name: provider_id
+        tests:
+          - not_null
+      - name: facility_id
+        tests:
+          - not_null
+      - name: severity_level
+        description: "Diagnosis severity level"
+        tests:
+          - accepted_values:
+              values: ['Low', 'Medium', 'High', 'Critical']
+
+  - name: int_patient__journey
+    description: >
+      Patient journey model with readmission logic and risk scoring.
+      Calculates 30-day readmissions, ED returns, and patient risk categories.
+      Used for clinical quality and population health analytics.
+    meta:
+      contains_phi: true
+      owner: "clinical-analytics@company.com"
+    columns:
+      - name: encounter_id
+        tests:
+          - not_null
+      - name: is_30day_readmission
+        description: "CMS 30-day readmission flag"
+      - name: is_7day_return
+        description: "7-day ED return flag"
+      - name: patient_risk_score
+        description: "Risk score 0-100"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+      - name: patient_risk_category
+        description: "Risk stratification"
+        tests:
+          - accepted_values:
+              values: ['Low Risk', 'Medium Risk', 'High Risk']
+      - name: ed_visits_last_90_days
+        description: "Count of ED visits in last 90 days (frequent flyer indicator)"
+
+  - name: int_financial__revenue_cycle
+    description: >
+      Revenue cycle intermediate model joining billing, payers, and encounters.
+      Calculates AR aging, collection rates, and payment variances.
+    meta:
+      contains_phi: false
+      owner: "finance-analytics@company.com"
+    columns:
+      - name: transaction_id
+        tests:
+          - not_null
+      - name: hospital_id
+        tests:
+          - not_null
+      - name: days_in_ar
+        description: "Days in accounts receivable"
+      - name: ar_aging_bucket
+        description: "AR aging category"
+        tests:
+          - accepted_values:
+              values: ['0-30 days', '31-60 days', '61-90 days', '91-120 days', '120+ days']
+      - name: collection_rate_pct
+        description: "Collection rate percentage"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              inclusive: true

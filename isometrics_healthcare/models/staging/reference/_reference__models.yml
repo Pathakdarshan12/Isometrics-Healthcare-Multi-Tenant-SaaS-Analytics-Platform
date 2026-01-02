@@ -1,0 +1,100 @@
+version: 2
+
+models:
+  - name: stg_reference__diagnoses
+    description: >
+      ICD-10 diagnosis codes reference table.
+      Contains standard diagnosis codes, descriptions, categories, and severity levels.
+      No PHI - safe for all users.
+    meta:
+      contains_phi: false
+      owner: "data-engineering@company.com"
+    columns:
+      - name: diagnosis_code
+        description: "ICD-10 diagnosis code (primary key)"
+        tests:
+          - not_null
+          - unique
+      - name: diagnosis_description
+        description: "Human-readable diagnosis description"
+        tests:
+          - not_null
+      - name: category
+        description: "Diagnosis category/grouping"
+      - name: severity_level
+        description: "Clinical severity level"
+        tests:
+          - accepted_values:
+              values: ['Low', 'Medium', 'High', 'Critical']
+      - name: is_chronic
+        description: "Flag indicating chronic condition"
+
+  - name: stg_reference__procedures
+    description: >
+      CPT procedure codes reference table.
+      Contains standard procedure codes, descriptions, categories, and typical charges.
+      No PHI - safe for all users.
+    meta:
+      contains_phi: false
+      owner: "data-engineering@company.com"
+    columns:
+      - name: procedure_code
+        description: "CPT procedure code (primary key)"
+        tests:
+          - not_null
+          - unique
+      - name: procedure_description
+        description: "Human-readable procedure description"
+        tests:
+          - not_null
+      - name: category
+        description: "Procedure category/grouping"
+      - name: typical_charge_min
+        description: "Minimum typical charge amount"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+      - name: typical_charge_max
+        description: "Maximum typical charge amount"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+      - name: typical_charge_avg
+        description: "Average of min and max typical charge"
+      - name: charge_range
+        description: "Difference between max and min charge"
+
+  - name: stg_reference__payers
+    description: >
+      Insurance payer/plan reference table.
+      Contains payer master data including reimbursement rates.
+      No PHI - safe for all users.
+    meta:
+      contains_phi: false
+      owner: "data-engineering@company.com"
+    columns:
+      - name: payer_id
+        description: "Payer identifier (primary key)"
+        tests:
+          - not_null
+          - unique
+      - name: payer_name
+        description: "Insurance payer name"
+        tests:
+          - not_null
+      - name: payer_type
+        description: "Type of payer"
+        tests:
+          - accepted_values:
+              values: ['Government', 'Commercial', 'Self-Pay']
+      - name: reimbursement_rate
+        description: "Expected reimbursement rate as decimal"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              inclusive: true
+      - name: is_active
+        description: "Active payer flag"
