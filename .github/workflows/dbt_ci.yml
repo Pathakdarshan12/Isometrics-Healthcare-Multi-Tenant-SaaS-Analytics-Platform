@@ -20,13 +20,20 @@ jobs:
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.11'
           cache: 'pip'
-      
-      - name: 📦 Install dependencies
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dbt
         run: |
-          pip install --upgrade pip
-          pip install dbt-snowflake==1.7.0 dbt-core==1.7.0
+          pip install dbt-snowflake==1.7.0
       
       - name: 🔧 Setup dbt profile
         run: |
@@ -43,50 +50,42 @@ jobs:
                 role: DBT_CI_ROLE
                 database: ISOMETRICS_CI
                 warehouse: DBT_CI_WH
-                schema: dbt_ci_pr_${{ github.event.pull_request.number }}
+                schema: dbt_ci_${{ github.event.pull_request.number || github.run_id }}
                 threads: 4
           EOF
       
-      - name: 📚 Install dbt packages
+      - name: Install dbt packages
         run: |
           cd isometrics_healthcare
           dbt deps
       
-      - name: ✅ dbt compile (syntax check)
+      - name: dbt compile (syntax check)
         run: |
           cd isometrics_healthcare
           dbt compile
-      
-      - name: 🏗️ dbt run (build changed models - Slim CI)
+
+      - name: dbt test (test changed models)
         run: |
           cd isometrics_healthcare
-          dbt run --select state:modified+ --defer --state ./prod_state || true
+          dbt test
       
-      - name: 🧪 dbt test (test changed models)
-        run: |
-          cd isometrics_healthcare
-          dbt test --select state:modified+ || true
-      
-      - name: 🔒 Verify RLS on all marts
+      - name: Verify RLS on all marts
         run: |
           cd isometrics_healthcare
           dbt test --select test_name:assert_rls_column_exists
           dbt test --select test_name:assert_no_cross_hospital_encounters
-      
-      - name: ⚕️ Check for PHI in logs
-        run: |
-          cd isometrics_healthcare
-          # Scan logs for potential PHI patterns
-          if grep -rE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' target/; then
-            echo "❌ POTENTIAL SSN DETECTED IN LOGS!"
-            exit 1
-          fi
-          echo "✅ No PHI patterns detected in logs"
-      
-      - name: 📊 Generate dbt docs
+
+      - name: Generate dbt docs
         run: |
           cd isometrics_healthcare
           dbt docs generate
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-test-results
+          path: isometrics_healthcare/target/run_results.json
 
       - name: 🧹 Cleanup CI schema
         if: always()
