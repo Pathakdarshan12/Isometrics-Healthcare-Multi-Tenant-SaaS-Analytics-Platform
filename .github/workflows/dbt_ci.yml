@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
       
-      - name: 🐍 Setup Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
@@ -33,7 +33,7 @@ jobs:
 
       - name: Install dbt
         run: |
-          pip install dbt-snowflake==1.7.0
+          pip install dbt-snowflake==1.11.0
       
       - name: 🔧 Setup dbt profile
         run: |

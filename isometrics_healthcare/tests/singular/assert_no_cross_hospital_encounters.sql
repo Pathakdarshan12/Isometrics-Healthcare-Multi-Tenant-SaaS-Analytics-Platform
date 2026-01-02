@@ -1,5 +1,4 @@
 -- CRITICAL TEST: Ensure no encounters reference patients from different hospitals
-
 select
     e.encounter_id,
     e.hospital_id as encounter_hospital,
