@@ -1,4 +1,4 @@
-{% snapshot my_snapshot %}
+{% snapshot snap_facilities %}
 
 {{ config(
     target_schema='snapshots',
