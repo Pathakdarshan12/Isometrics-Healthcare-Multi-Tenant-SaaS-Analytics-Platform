@@ -1,11 +1,14 @@
 {{ config(
     materialized='table',
     tags=['marts', 'clinical', 'provider_performance'],
-    cluster_by=['hospital_id', 'provider_id']
+    cluster_by=['hospital_id', 'provider_id'],
+    schema = 'marts',
+    post_hook=["{{ apply_rls_policy() }}"]
 ) }}
 
 with patient_journey as (
     select * from {{ ref('int_patient__journey') }}
+    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
 
 base_metrics as (

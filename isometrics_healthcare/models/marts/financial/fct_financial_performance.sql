@@ -2,7 +2,9 @@
   config(
     materialized='table',
     tags=['marts', 'financial', 'revenue'],
-    cluster_by=['hospital_id', 'metric_date']
+    cluster_by=['hospital_id', 'metric_date'],
+    schema = 'marts',
+    post_hook=["{{ apply_rls_policy() }}"]
   )
 }}
 
@@ -13,6 +15,7 @@
 
 with revenue_cycle as (
     select * from {{ ref('int_financial__revenue_cycle') }}
+    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
 
 daily_financial_metrics as (

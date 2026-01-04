@@ -38,10 +38,25 @@ sources:
             tests:
               - not_null
               - unique
+
           - name: payer_name
             tests:
               - not_null
+
           - name: payer_type
             tests:
               - accepted_values:
-                  values: ['Government', 'Commercial', 'Self-Pay']
+                  arguments:
+                    values:
+                      - Commercial
+                      - Auto/Liability
+                      - Marketplace
+                      - Self-Pay
+                      - Self-Funded
+                      - International
+                      - Financial Assistance
+                      - Specialty
+                      - Government
+                      - Workers Comp
+                      - Uninsured
+                      - Charity

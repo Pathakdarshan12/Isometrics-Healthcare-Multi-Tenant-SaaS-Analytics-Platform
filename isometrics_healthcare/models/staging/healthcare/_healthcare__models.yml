@@ -5,8 +5,9 @@ models:
     description: >
       Hospital master data (tenants).
       Each hospital is a separate tenant with isolated data.
-    meta:
-      contains_phi: false
+    config:
+      meta:
+        contains_phi: false
     columns:
       - name: hospital_id
         description: "🔒 Unique hospital identifier (tenant ID)"
@@ -19,15 +20,17 @@ models:
       - name: contract_tier
         tests:
           - accepted_values:
-              values: ['Basic', 'Advanced', 'Enterprise']
+              arguments:
+                values: ['Basic', 'Advanced', 'Enterprise']
 
   - name: stg_healthcare__patients
     description: >
       ⚠️ PHI WARNING: Patient demographics (partially de-identified).
       Names and MRN remain in raw layer only.
-    meta:
-      contains_phi: true
-      phi_fields: ['date_of_birth', 'zip_code_3digit']
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: ['date_of_birth', 'zip_code_3digit']
     columns:
       - name: patient_id
         description: "De-identified patient ID"
@@ -39,23 +42,27 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('stg_healthcare__hospitals')
-              field: hospital_id
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: age_years
         description: "Current age in years"
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 120
+              arguments:
+                min_value: 0
+                max_value: 120
       - name: age_group
         tests:
           - accepted_values:
-              values: ['Pediatric', 'Adult', 'Geriatric', 'Unknown']
+              arguments:
+               values: ['Pediatric', 'Adult', 'Geriatric', 'Unknown']
 
   - name: stg_healthcare__providers
     description: "Provider roster - physicians, nurses, specialists"
-    meta:
-      contains_phi: false
+    config:
+      meta:
+        contains_phi: false
     columns:
       - name: provider_id
         tests:
@@ -66,8 +73,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('stg_healthcare__hospitals')
-              field: hospital_id
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: npi
         description: "National Provider Identifier"
         tests:
@@ -89,9 +97,10 @@ models:
     description: >
       ⚠️ PHI WARNING: Patient encounters (admissions/visits).
       Primary fact table for healthcare analytics.
-    meta:
-      contains_phi: true
-      phi_fields: ['admission_date', 'discharge_date']
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: ['admission_date', 'discharge_date']
     columns:
       - name: encounter_id
         description: "Unique encounter identifier"
@@ -103,33 +112,39 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('stg_healthcare__hospitals')
-              field: hospital_id
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: patient_id
         tests:
           - not_null
           - relationships:
-              to: ref('stg_healthcare__patients')
-              field: patient_id
+              arguments:
+                to: ref('stg_healthcare__patients')
+                field: patient_id
       - name: provider_id
         tests:
           - not_null
           - relationships:
-              to: ref('stg_healthcare__providers')
-              field: provider_id
+              arguments:
+                to: ref('stg_healthcare__providers')
+                field: provider_id
       - name: encounter_type
         tests:
           - accepted_values:
-              values: ['Inpatient', 'Outpatient', 'Emergency', 'Observation']
+              arguments:
+                values: ['Inpatient', 'Outpatient', 'Emergency', 'Observation']
       - name: length_of_stay
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 365
+              arguments:
+                min_value: 0
+                max_value: 365
       - name: total_charges
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: true
+              arguments:
+                min_value: 0
+                inclusive: true

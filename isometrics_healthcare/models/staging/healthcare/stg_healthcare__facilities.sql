@@ -1,12 +1,17 @@
 {{
   config(
     materialized='view',
-    tags=['staging', 'bronze', 'facilities']
+    secure = True,
+    tags=['staging', 'bronze', 'facilities'],
+    schema = 'staging',
+    cluster_by=['hospital_id', 'facility_id'],
+    post_hook=["{{ apply_rls_policy() }}"]
   )
 }}
 
 with source as (
     select * from {{ source('healthcare', 'raw_facilities') }}
+    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
 
 renamed as (

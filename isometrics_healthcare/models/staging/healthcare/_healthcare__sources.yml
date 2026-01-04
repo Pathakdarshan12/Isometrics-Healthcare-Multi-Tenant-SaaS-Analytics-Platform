@@ -9,11 +9,18 @@ sources:
     database: isometrics_dev
     schema: raw_phi
 
+    config:
+      loaded_at_field: _loaded_at
+      freshness:
+        warn_after: { count: 4, period: hour }
+        error_after: { count: 6, period: hour }
+
     tables:
       - name: raw_hospitals
         description: "Hospital master data (tenants)"
-        meta:
-          contains_phi: false
+        config:
+          meta:
+            contains_phi: false
         columns:
           - name: hospital_id
             description: "🔒 Unique hospital identifier (tenant_id)"
@@ -26,16 +33,18 @@ sources:
           - name: contract_tier
             tests:
               - accepted_values:
-                  values: ['Basic', 'Advanced', 'Enterprise']
+                  arguments:
+                    values: ['Basic', 'Advanced', 'Enterprise']
 
       - name: raw_patients
         description: >
           ⚠️ PHI WARNING: Patient demographics
           Contains: MRN, Names, DOB, Zip Code
           Access: Restricted to authorized personnel only
-        meta:
-          contains_phi: true
-          phi_fields: ['mrn', 'first_name', 'last_name', 'date_of_birth', 'zip_code']
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['mrn', 'first_name', 'last_name', 'date_of_birth', 'zip_code']
         columns:
           - name: patient_id
             description: "De-identified patient ID"
@@ -47,8 +56,9 @@ sources:
             tests:
               - not_null
               - relationships:
-                  to: source('healthcare', 'raw_hospitals')
-                  field: hospital_id
+                  arguments:
+                    to: source('healthcare', 'raw_hospitals')
+                    field: hospital_id
           - name: mrn
             description: "⚠️ PHI: Medical Record Number"
           - name: date_of_birth
@@ -56,8 +66,9 @@ sources:
 
       - name: raw_providers
         description: "Provider roster - physicians, nurses, specialists"
-        meta:
-          contains_phi: false
+        config:
+          meta:
+            contains_phi: false
         columns:
           - name: provider_id
             tests:
@@ -68,8 +79,9 @@ sources:
             tests:
               - not_null
               - relationships:
-                  to: source('healthcare', 'raw_hospitals')
-                  field: hospital_id
+                  arguments:
+                    to: source('healthcare', 'raw_hospitals')
+                    field: hospital_id
           - name: npi
             description: "National Provider Identifier"
             tests:
@@ -91,9 +103,10 @@ sources:
         description: >
           ⚠️ PHI WARNING: Patient encounters (admissions/visits)
           Contains: Patient linkage, dates of service
-        meta:
-          contains_phi: true
-          phi_fields: ['patient_id', 'admission_date', 'discharge_date']
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['patient_id', 'admission_date', 'discharge_date']
         columns:
           - name: encounter_id
             tests:
@@ -104,26 +117,30 @@ sources:
             tests:
               - not_null
               - relationships:
-                  to: source('healthcare', 'raw_hospitals')
-                  field: hospital_id
+                  arguments:
+                    to: source('healthcare', 'raw_hospitals')
+                    field: hospital_id
           - name: patient_id
             tests:
               - not_null
               - relationships:
-                  to: source('healthcare', 'raw_patients')
-                  field: patient_id
+                  arguments:
+                    to: source('healthcare', 'raw_patients')
+                    field: patient_id
           - name: admission_date
             tests:
               - not_null
           - name: encounter_type
             tests:
               - accepted_values:
-                  values: ['Inpatient', 'Outpatient', 'Emergency', 'Observation']
+                  arguments:
+                    values: ['Inpatient', 'Outpatient', 'Emergency', 'Observation']
 
       - name: raw_billing_transactions
         description: "Billing and payment transactions"
-        meta:
-          contains_phi: false  # Financial data only
+        config:
+          meta:
+            contains_phi: false  # Financial data only
         columns:
           - name: transaction_id
             tests:
@@ -133,10 +150,3 @@ sources:
             description: "🔒 CRITICAL for RLS"
             tests:
               - not_null
-
-    # Freshness checks (critical for patient safety!)
-    freshness:
-      warn_after: {count: 4, period: hour}
-      error_after: {count: 6, period: hour}
-
-    loaded_at_field: _loaded_at

@@ -5,7 +5,9 @@
     incremental_strategy='merge',
     cluster_by=['hospital_id', 'transaction_date'],
     on_schema_change='fail',
-    tags=['marts', 'incremental', 'financial']
+    tags=['marts', 'incremental', 'financial'],
+    schema = 'marts',
+    post_hook=["{{ apply_rls_policy() }}"]
   )
 }}
 

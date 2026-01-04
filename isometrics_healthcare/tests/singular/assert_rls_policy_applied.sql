@@ -9,7 +9,7 @@ SELECT
     table_name,
     'Missing hospital_id or no constraints' as error_message
 FROM information_schema.tables t
-WHERE table_schema = 'MARTS'
+WHERE table_schema = 'DEV_DBT_MARTS'
   AND table_type = 'BASE TABLE'
   AND NOT EXISTS (
     SELECT 1

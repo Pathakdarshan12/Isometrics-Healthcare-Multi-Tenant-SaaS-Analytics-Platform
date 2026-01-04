@@ -1,12 +1,20 @@
 {{
   config(
     materialized='view',
-    tags=['staging', 'bronze', 'billing']
+    secure = True,
+    tags=['staging', 'bronze', 'billing'],
+    schema = 'staging',
+    cluster_by=['hospital_id', 'transaction_date'],
+    post_hook=["{{ apply_rls_policy() }}"]
   )
 }}
 
 with source as (
-    select * from {{ source('healthcare', 'raw_billing_transactions') }}
+    select *
+    from {{ source('healthcare', 'raw_billing_transactions') }}
+    WHERE
+    -- Admin/Dev roles see everything
+    CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE')
 ),
 
 renamed as (

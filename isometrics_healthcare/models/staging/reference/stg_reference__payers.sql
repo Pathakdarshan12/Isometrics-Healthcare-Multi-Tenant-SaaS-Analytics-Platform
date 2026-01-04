@@ -1,7 +1,8 @@
 {{
   config(
     materialized='view',
-    tags=['staging', 'reference', 'payer']
+    tags=['staging', 'reference', 'payer'],
+    schema = 'staging'
   )
 }}
 

@@ -1,7 +1,10 @@
 {{
   config(
     materialized='view',
+    secure = True,
     tags=['staging', 'bronze', 'hospitals', 'tenants'],
+    schema = 'staging',
+    post_hook=["{{ apply_rls_policy() }}"],
     meta={
       'contains_phi': false,
       'owner': 'healthcare-data-team@company.com'
@@ -11,6 +14,7 @@
 
 with source as (
     select * from {{ source('healthcare', 'raw_hospitals') }}
+    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
 
 renamed as (

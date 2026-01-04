@@ -6,9 +6,10 @@ models:
       ICD-10 diagnosis codes reference table.
       Contains standard diagnosis codes, descriptions, categories, and severity levels.
       No PHI - safe for all users.
-    meta:
-      contains_phi: false
-      owner: "data-engineering@company.com"
+    config:
+      meta:
+        contains_phi: false
+        owner: "data-engineering@company.com"
     columns:
       - name: diagnosis_code
         description: "ICD-10 diagnosis code (primary key)"
@@ -25,7 +26,8 @@ models:
         description: "Clinical severity level"
         tests:
           - accepted_values:
-              values: ['Low', 'Critical', 'Moderate', 'High']
+              arguments:
+                values: ['Low', 'Critical', 'Moderate', 'High']
       - name: is_chronic
         description: "Flag indicating chronic condition"
 
@@ -34,9 +36,10 @@ models:
       CPT procedure codes reference table.
       Contains standard procedure codes, descriptions, categories, and typical charges.
       No PHI - safe for all users.
-    meta:
-      contains_phi: false
-      owner: "data-engineering@company.com"
+    config:
+      meta:
+        contains_phi: false
+        owner: "data-engineering@company.com"
     columns:
       - name: procedure_code
         description: "CPT procedure code (primary key)"
@@ -53,14 +56,16 @@ models:
         description: "Minimum typical charge amount"
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: true
+              arguments:
+                min_value: 0
+                inclusive: true
       - name: typical_charge_max
         description: "Maximum typical charge amount"
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
-              inclusive: true
+              arguments:
+                min_value: 0
+                inclusive: true
       - name: typical_charge_avg
         description: "Average of min and max typical charge"
       - name: charge_range
@@ -71,9 +76,10 @@ models:
       Insurance payer/plan reference table.
       Contains payer master data including reimbursement rates.
       No PHI - safe for all users.
-    meta:
-      contains_phi: false
-      owner: "data-engineering@company.com"
+    config:
+      meta:
+        contains_phi: false
+        owner: "data-engineering@company.com"
     columns:
       - name: payer_id
         description: "Payer identifier (primary key)"
@@ -88,13 +94,15 @@ models:
         description: "Type of payer"
         tests:
           - accepted_values:
-              values: ['Government', 'Commercial', 'Self-Pay']
+              arguments:
+                values: ['Commercial', 'Auto/Liability', 'Marketplace', 'Self-Pay', 'Self-Funded', 'International', 'Financial Assistance', 'Specialty', 'Government', 'Workers Comp', 'Uninsured','Charity']
       - name: reimbursement_rate
         description: "Expected reimbursement rate as decimal"
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 1
-              inclusive: true
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
       - name: is_active
         description: "Active payer flag"

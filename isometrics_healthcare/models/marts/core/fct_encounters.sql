@@ -5,7 +5,9 @@
     incremental_strategy='delete+insert',
     cluster_by=['hospital_id', 'admission_date_day'],
     on_schema_change='fail',
-    tags=['marts', 'incremental', 'encounters']
+    tags=['marts', 'incremental', 'encounters'],
+    schema = 'marts',
+    post_hook=["{{ apply_rls_policy() }}"]
   )
 }}
 

@@ -2,12 +2,15 @@
   config(
     materialized='table',
     tags=['marts', 'operational', 'capacity'],
-    cluster_by=['hospital_id', 'metric_date']
+    cluster_by=['hospital_id', 'metric_date'],
+    schema = 'marts',
+    post_hook=["{{ apply_rls_policy() }}"]
   )
 }}
 
 with encounters as (
     select * from {{ ref('int_encounters__enriched') }}
+    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
 
 facilities as (

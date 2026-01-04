@@ -1,7 +1,11 @@
 {{
   config(
     materialized='view',
+    secure = True,
     tags=['staging', 'bronze', 'patients'],
+    schema = 'staging',
+    cluster_by=['hospital_id', 'patient_id'],
+    post_hook=["{{ apply_rls_policy() }}"],
     meta={
       'contains_phi': true,
       'phi_fields': ['date_of_birth', 'zip_code'],
@@ -12,6 +16,7 @@
 
 with source as(
     select * from {{ source('healthcare', 'raw_patients') }}
+    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
 deidentified as (
     select

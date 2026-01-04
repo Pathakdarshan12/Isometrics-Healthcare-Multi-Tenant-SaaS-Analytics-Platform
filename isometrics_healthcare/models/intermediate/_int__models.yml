@@ -1,4 +1,4 @@
-Dversion: 2
+version: 2
 
 models:
   - name: int_encounters__enriched
@@ -6,9 +6,10 @@ models:
       Enriched encounter data joining all dimensional context.
       Ephemeral model used as base for mart models.
       Includes hospital, patient, provider, facility, and diagnosis details.
-    meta:
-      contains_phi: true
-      owner: "healthcare-data-team@company.com"
+    config:
+      meta:
+        contains_phi: true
+        owner: "healthcare-data-team@company.com"
     columns:
       - name: encounter_id
         description: "Unique encounter identifier"
@@ -33,16 +34,17 @@ models:
         tests:
           - accepted_values:
               arguments:
-              values: ['Low', 'Critical', 'Moderate', 'High']
+                values: ['Low', 'Critical', 'Moderate', 'High']
 
   - name: int_patient__journey
     description: >
       Patient journey model with readmission logic and risk scoring.
       Calculates 30-day readmissions, ED returns, and patient risk categories.
       Used for clinical quality and population health analytics.
-    meta:
-      contains_phi: true
-      owner: "clinical-analytics@company.com"
+    config:
+      meta:
+        contains_phi: true
+        owner: "clinical-analytics@company.com"
     columns:
       - name: encounter_id
         tests:
@@ -56,7 +58,7 @@ models:
         tests:
           - accepted_values:
               arguments:
-              values: ['Low Risk', 'Medium Risk', 'High Risk']
+                values: ['Low Risk', 'Medium Risk', 'High Risk']
       - name: ed_visits_last_90_days
         description: "Count of ED visits in last 90 days (frequent flyer indicator)"
 
@@ -64,9 +66,10 @@ models:
     description: >
       Revenue cycle intermediate model joining billing, payers, and encounters.
       Calculates AR aging, collection rates, and payment variances.
-    meta:
-      contains_phi: false
-      owner: "finance-analytics@company.com"
+    config:
+      meta:
+        contains_phi: false
+        owner: "finance-analytics@company.com"
     columns:
       - name: transaction_id
         tests:
@@ -81,11 +84,12 @@ models:
         tests:
           - accepted_values:
               arguments:
-              values: ['0-30 days', '31-60 days', '61-90 days', '91-120 days', '120+ days']
+                values: ['0-30 days', '31-60 days', '61-90 days', '91-120 days', '120+ days']
       - name: collection_rate_pct
         description: "Collection rate percentage"
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 100
-              inclusive: true
+              arguments:
+                min_value: 0
+                max_value: 100
+                inclusive: true
