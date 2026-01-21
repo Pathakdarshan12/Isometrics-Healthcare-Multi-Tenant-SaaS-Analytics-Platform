@@ -136,6 +136,18 @@ ADD ROW ACCESS POLICY hospital_isolation_policy ON (hospital_id);
 -- DROP ROW ACCESS POLICY phi_access_policy;
 -- DROP ROW ACCESS POLICY hospital_isolation_policy;
 
+
+-- Grant ownership or apply privileges
+GRANT OWNERSHIP ON ROW ACCESS POLICY hospital_isolation_policy TO ROLE DBT_DEV_ROLE;
+GRANT APPLY ON ROW ACCESS POLICY hospital_isolation_policy TO ROLE DBT_DEV_ROLE;
+
+-- Grant ownership or apply privileges
+GRANT OWNERSHIP ON ROW ACCESS POLICY phi_access_policy TO ROLE DBT_DEV_ROLE;
+GRANT APPLY ON ROW ACCESS POLICY phi_access_policy TO ROLE DBT_DEV_ROLE;
+
+
+show row access policies;
+
 -- ============================================
 -- CREATE AUDIT SCHEMA & TABLES
 -- ============================================

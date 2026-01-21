@@ -33,6 +33,10 @@ from medical_codes_library import (
     DENIAL_REASONS, ADJUSTMENT_REASONS, CLAIM_STATUS, US_REGIONS,
 )
 
+from clinical_codes_library import (
+    LAB_TESTS, MEDICATIONS, COMMON_ALLERGENS, CHRONIC_DIAGNOSES
+)
+
 BATCH_SIZE = 50000
 
 class HealthcareDataGenerator:
@@ -63,6 +67,286 @@ class HealthcareDataGenerator:
             if state in states:
                 return region
         return 'Other'
+
+    def generate_vital_signs(encounter, num_measurements=None):
+        """Generate realistic vital signs for an encounter"""
+        vitals = []
+
+        if num_measurements is None:
+            if encounter['encounter_type'] == 'Emergency':
+                num_measurements = random.randint(3, 8)
+            elif encounter['encounter_type'] == 'Inpatient':
+                num_measurements = encounter['length_of_stay'] * random.randint(2, 4)
+            else:
+                num_measurements = 1
+
+        for i in range(num_measurements):
+            hours_offset = (i * (encounter['length_of_stay'] * 24 / max(num_measurements, 1)))
+            measurement_time = encounter['admission_date'] + timedelta(hours=hours_offset)
+
+            temp_f = round(np.random.normal(98.6, 1.0), 1)
+            hr = max(40, min(180, int(np.random.normal(75, 12))))
+            rr = max(8, min(40, int(np.random.normal(16, 3))))
+            sbp = max(70, min(200, int(np.random.normal(120, 15))))
+            dbp = max(40, min(120, int(np.random.normal(80, 10))))
+            spo2 = max(85, min(100, int(np.random.normal(97, 2))))
+
+            if i == 0:
+                weight_kg = max(40, np.random.normal(75, 15))
+                height_cm = max(140, np.random.normal(170, 10))
+
+            bmi = weight_kg / ((height_cm / 100) ** 2)
+            pain = random.randint(0, 10) if random.random() < 0.4 else 0
+            map_mmhg = int((sbp + 2 * dbp) / 3)
+
+            vitals.append({
+                'vital_id': f'VIT_{len(vitals) + 1:012d}',
+                'hospital_id': encounter['hospital_id'],
+                'encounter_id': encounter['encounter_id'],
+                'patient_id': encounter['patient_id'],
+                'measurement_datetime': measurement_time,
+                'temperature_f': temp_f,
+                'heart_rate_bpm': hr,
+                'respiratory_rate': rr,
+                'systolic_bp': sbp,
+                'diastolic_bp': dbp,
+                'oxygen_saturation_pct': spo2,
+                'weight_kg': round(weight_kg, 1),
+                'height_cm': round(height_cm, 1),
+                'bmi': round(bmi, 1),
+                'pain_score': pain,
+                'map_mmhg': map_mmhg,
+                'position': random.choice(['SITTING', 'STANDING', 'SUPINE']),
+                'measured_by_role': random.choice(['RN', 'MA', 'MD']),
+                '_loaded_at': datetime.now()
+            })
+
+        return vitals
+
+    def generate_clinical_orders(encounter, order_start_id=1):
+        """Generate clinical orders for an encounter"""
+        orders = []
+
+        num_orders = {
+            'Emergency': random.randint(5, 15),
+            'Inpatient': random.randint(10, 30),
+            'Observation': random.randint(5, 12),
+            'Outpatient': random.randint(1, 5)
+        }.get(encounter['encounter_type'], 3)
+
+        for i in range(num_orders):
+            order_type = random.choices(
+                ['LAB', 'RADIOLOGY', 'MEDICATION', 'PROCEDURE'],
+                weights=[0.40, 0.20, 0.30, 0.10]
+            )[0]
+
+            order_time = encounter['admission_date'] + timedelta(
+                hours=random.uniform(0, min(24, encounter['length_of_stay'] * 24)))
+
+            order = {
+                'order_id': f'ORD_{order_start_id + i:012d}',
+                'hospital_id': encounter['hospital_id'],
+                'encounter_id': encounter['encounter_id'],
+                'patient_id': encounter['patient_id'],
+                'provider_id': encounter['provider_id'],
+                'order_type': order_type,
+                'order_datetime': order_time,
+                'priority': random.choices(['ROUTINE', 'URGENT', 'STAT'], weights=[0.70, 0.20, 0.10])[0],
+                '_loaded_at': datetime.now()
+            }
+
+            # Type-specific fields
+            if order_type == 'LAB':
+                test = random.choice(list(LAB_TESTS.items()))
+                order.update({
+                    'order_code': test[0],
+                    'order_description': test[1]['name'],
+                    'specimen_type': random.choice(['Blood', 'Serum', 'Urine']),
+                    'scheduled_datetime': order_time + timedelta(hours=1),
+                    'completed_datetime': order_time + timedelta(hours=random.uniform(2, 6)),
+                    'order_status': 'COMPLETED'
+                })
+            elif order_type == 'MEDICATION':
+                med = random.choice(MEDICATIONS)
+                order.update({
+                    'order_code': f'MED-{random.randint(1000, 9999)}',
+                    'order_description': med['name'],
+                    'medication_name': med['name'],
+                    'dose': med['dose'],
+                    'route': random.choice(med['routes']),
+                    'frequency': med['frequency'],
+                    'scheduled_datetime': order_time,
+                    'completed_datetime': order_time + timedelta(minutes=30),
+                    'order_status': 'COMPLETED'
+                })
+            else:
+                order.update({
+                    'order_code': f'{order_type}-{random.randint(1000, 9999)}',
+                    'order_description': f'{order_type} Study',
+                    'scheduled_datetime': order_time + timedelta(hours=2),
+                    'completed_datetime': order_time + timedelta(hours=4),
+                    'order_status': random.choice(['COMPLETED', 'IN_PROGRESS'])
+                })
+
+            orders.append(order)
+
+        return orders
+
+    def generate_lab_results(orders):
+        """Generate lab results"""
+        results = []
+
+        for order in orders:
+            if order['order_type'] == 'LAB' and order['order_status'] == 'COMPLETED':
+                test_code = order['order_code']
+                if test_code in LAB_TESTS:
+                    test_info = LAB_TESTS[test_code]
+                    mean = (test_info['range'][0] + test_info['range'][1]) / 2
+                    std = (test_info['range'][1] - test_info['range'][0]) / 4
+
+                    value = np.random.normal(mean, std)
+                    abnormal_flag = 'L' if value < test_info['range'][0] else 'H' if value > test_info['range'][
+                        1] else 'N'
+
+                    results.append({
+                        'result_id': f'RES_{len(results) + 1:012d}',
+                        'hospital_id': order['hospital_id'],
+                        'order_id': order['order_id'],
+                        'patient_id': order['patient_id'],
+                        'encounter_id': order['encounter_id'],
+                        'result_type': 'LAB',
+                        'test_code': test_code,
+                        'test_name': test_info['name'],
+                        'result_value': f"{value:.2f}",
+                        'result_value_numeric': round(value, 2),
+                        'result_units': test_info['units'],
+                        'reference_range_low': test_info['range'][0],
+                        'reference_range_high': test_info['range'][1],
+                        'abnormal_flag': abnormal_flag,
+                        'result_datetime': order['completed_datetime'],
+                        'result_status': 'FINAL',
+                        '_loaded_at': datetime.now()
+                    })
+
+        return results
+
+    def generate_medication_administration(orders):
+        """Generate medication administration records"""
+        administrations = []
+
+        for order in orders:
+            if order['order_type'] == 'MEDICATION':
+                # Generate 1-10 administration records per order
+                num_admin = random.randint(1, 10)
+
+                for i in range(num_admin):
+                    scheduled_time = order['scheduled_datetime'] + timedelta(hours=i * 6)  # Q6H example
+                    admin_time = scheduled_time + timedelta(minutes=random.randint(-30, 60))
+
+                    status = random.choices(
+                        ['GIVEN', 'REFUSED', 'HELD', 'MISSED'],
+                        weights=[0.85, 0.05, 0.05, 0.05]
+                    )[0]
+
+                    administrations.append({
+                        'admin_id': f'ADM_{len(administrations) + 1:012d}',
+                        'hospital_id': order['hospital_id'],
+                        'encounter_id': order['encounter_id'],
+                        'patient_id': order['patient_id'],
+                        'order_id': order['order_id'],
+                        'medication_name': order.get('medication_name'),
+                        'dose': order.get('dose'),
+                        'route': order.get('route'),
+                        'scheduled_datetime': scheduled_time,
+                        'administered_datetime': admin_time if status == 'GIVEN' else None,
+                        'administered_by_provider_id': order['provider_id'],
+                        'administration_status': status,
+                        'barcode_scanned': random.random() < 0.90,  # 90% compliance
+                        'witnessed_by_provider_id': f'PROV_{random.randint(1, 100):08d}' if random.random() < 0.80 else None,
+                        'adverse_reaction_flag': random.random() < 0.02,  # 2% adverse reactions
+                        '_loaded_at': datetime.now()
+                    })
+
+        return administrations
+
+    def generate_patient_allergies(patient_ids, hospital_id):
+        """Generate patient allergies"""
+        allergies = []
+
+        for patient_id in patient_ids:
+            # 40% of patients have at least one allergy
+            if random.random() < 0.40:
+                num_allergies = random.choices([1, 2, 3], weights=[0.70, 0.25, 0.05])[0]
+
+                for _ in range(num_allergies):
+                    allergen = random.choice(COMMON_ALLERGENS)
+                    severity = random.choice(allergen['severity'])
+                    reaction = random.choice(allergen['reactions'])
+
+                    allergies.append({
+                        'allergy_id': f'ALG_{len(allergies) + 1:012d}',
+                        'hospital_id': hospital_id,
+                        'patient_id': patient_id,
+                        'allergen_type': 'DRUG' if allergen['name'] in ['Penicillin', 'Sulfa', 'Morphine'] else 'FOOD',
+                        'allergen_name': allergen['name'],
+                        'reaction_type': reaction,
+                        'severity': severity,
+                        'allergy_status': 'ACTIVE',
+                        'onset_date': datetime.now() - timedelta(days=random.randint(30, 3650)),
+                        '_loaded_at': datetime.now()
+                    })
+
+        return allergies
+
+    def generate_problem_list(patient_ids, hospital_id):
+        """Generate patient problem lists"""
+        problems = []
+
+        for patient_id in patient_ids:
+            # Each patient has 0-5 chronic problems
+            num_problems = random.choices([0, 1, 2, 3, 4, 5], weights=[0.20, 0.30, 0.25, 0.15, 0.07, 0.03])[0]
+
+            for _ in range(num_problems):
+                diagnosis = random.choice(CHRONIC_DIAGNOSES)
+
+                problems.append({
+                    'problem_id': f'PROB_{len(problems) + 1:012d}',
+                    'hospital_id': hospital_id,
+                    'patient_id': patient_id,
+                    'diagnosis_code': diagnosis[0],
+                    'diagnosis_description': diagnosis[1],
+                    'is_chronic': diagnosis[2],
+                    'severity': diagnosis[3],
+                    'problem_status': random.choices(['ACTIVE', 'RESOLVED'], weights=[0.80, 0.20])[0],
+                    'onset_date': datetime.now() - timedelta(days=random.randint(365, 3650)),
+                    '_loaded_at': datetime.now()
+                })
+
+        return problems
+
+    def generate_sdoh_screenings(patient_ids, hospital_id):
+        """Generate SDOH screenings"""
+        screenings = []
+
+        for patient_id in patient_ids:
+            # 30% of patients have SDOH screening
+            if random.random() < 0.30:
+                screenings.append({
+                    'screening_id': f'SDOH_{len(screenings) + 1:012d}',
+                    'hospital_id': hospital_id,
+                    'patient_id': patient_id,
+                    'screening_date': datetime.now() - timedelta(days=random.randint(0, 365)),
+                    'housing_status': random.choice(['STABLE', 'UNSTABLE', 'HOMELESS']),
+                    'housing_concerns': random.random() < 0.15,
+                    'food_insecurity_flag': random.random() < 0.20,
+                    'transportation_barriers': random.random() < 0.25,
+                    'difficulty_paying_utilities': random.random() < 0.18,
+                    'social_isolation_score': random.randint(0, 10),
+                    'employment_status': random.choice(['Employed Full-time', 'Unemployed', 'Retired']),
+                    '_loaded_at': datetime.now()
+                })
+
+        return screenings
 
     def generate_hospitals(self) -> pd.DataFrame:
         """Generate hospital master data"""
