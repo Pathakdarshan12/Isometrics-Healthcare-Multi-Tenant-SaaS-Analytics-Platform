@@ -1,0 +1,6 @@
+version: 2
+seeds:
+  - name: plan_tiers
+    columns: []
+  - name: tenant_config
+    columns: []

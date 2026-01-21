@@ -1,4 +1,4 @@
-packages:
+  packages:
   - package: dbt-labs/dbt_utils
     version: 1.3.3
 
@@ -7,3 +7,6 @@ packages:
 
   - package: dbt-labs/audit_helper
     version: 0.12.2
+
+  - package: elementary-data/elementary
+    version: 0.20.1
