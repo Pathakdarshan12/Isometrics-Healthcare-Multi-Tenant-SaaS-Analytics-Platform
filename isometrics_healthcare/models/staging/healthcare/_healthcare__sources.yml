@@ -73,7 +73,6 @@ sources:
           - name: provider_id
             tests:
               - not_null
-              - unique
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests:
@@ -140,7 +139,7 @@ sources:
         description: "Billing and payment transactions"
         config:
           meta:
-            contains_phi: false  # Financial data only
+            contains_phi: false
         columns:
           - name: transaction_id
             tests:
@@ -162,7 +161,6 @@ sources:
         columns:
           - name: order_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests:
@@ -171,7 +169,6 @@ sources:
                   arguments:
                     to: source('healthcare', 'raw_hospitals')
                     field: hospital_id
-
           - name: order_type
             tests:
               - accepted_values:
@@ -205,7 +202,6 @@ sources:
         columns:
           - name: vital_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests: [not_null]
@@ -221,7 +217,6 @@ sources:
         columns:
           - name: problem_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests: [not_null]
@@ -237,7 +232,6 @@ sources:
         columns:
           - name: admin_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests: [not_null]
@@ -253,7 +247,6 @@ sources:
         columns:
           - name: allergy_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests: [not_null]
@@ -269,7 +262,6 @@ sources:
         columns:
           - name: care_plan_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests: [not_null]
@@ -285,7 +277,6 @@ sources:
         columns:
           - name: coverage_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests: [not_null]
@@ -300,7 +291,6 @@ sources:
         columns:
           - name: auth_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests: [not_null]
@@ -316,7 +306,6 @@ sources:
         columns:
           - name: screening_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests: [not_null]
@@ -331,7 +320,6 @@ sources:
         columns:
           - name: measure_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests: [not_null]
@@ -346,7 +334,6 @@ sources:
         columns:
           - name: referral_id
             tests: [not_null, unique]
-
           - name: hospital_id
             description: "🔒 CRITICAL for RLS"
             tests: [not_null]

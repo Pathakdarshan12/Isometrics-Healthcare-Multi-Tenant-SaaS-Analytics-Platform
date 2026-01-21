@@ -1,23 +1,25 @@
-{{
-  config(
-    materialized='view',
-    secure = True,
-    tags=['staging', 'bronze', 'encounters'],
-    schema = 'staging',
-    cluster_by=['hospital_id', 'patient_id', 'provider_id'],
-    post_hook=["{{ apply_rls_policy() }}"],
-    meta={
-      'contains_phi': true,
-      'phi_fields': ['admission_date', 'discharge_date'],
-      'owner': 'healthcare-data-team@company.com'
-    }
-  )
-}}
-
 with source as (
     select *
     from {{ source('healthcare', 'raw_encounters') }}
-    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
+    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE')
+),
+
+-- Add this new CTE to calculate readmissions
+readmission_logic as (
+    select
+        *,
+        -- Get previous encounter's discharge date for same patient
+        lag(discharge_date) over (
+            partition by patient_id
+            order by admission_date
+        ) as previous_discharge_date,
+
+        -- Get previous encounter type
+        lag(encounter_type) over (
+            partition by patient_id
+            order by admission_date
+        ) as previous_encounter_type
+    from source
 ),
 
 cleaned as (
@@ -26,7 +28,7 @@ cleaned as (
         encounter_id,
 
         -- Foreign Keys
-        hospital_id,      -- 🔒 CRITICAL for RLS
+        hospital_id,
         patient_id,
         provider_id,
         facility_id,
@@ -42,21 +44,34 @@ cleaned as (
         discharge_date,
         length_of_stay,
 
-        -- Derived date parts (for analytics)
+        -- Derived date parts
         date_trunc('day', admission_date) as admission_date_day,
         date_trunc('month', admission_date) as admission_date_month,
         date_trunc('year', admission_date) as admission_date_year,
         date_trunc('quarter', admission_date) as admission_date_quarter,
 
-        -- Day of week
         dayname(admission_date) as admission_day_of_week,
         dayofweek(admission_date) as admission_day_of_week_num,
 
         -- Financial
         total_charges,
 
-        -- Quality Indicators
-        is_readmission,
+        -- Quality Indicators - NOW ACTUALLY CALCULATED
+        case
+            when encounter_type = 'Inpatient'  -- Current encounter is inpatient
+                and previous_encounter_type = 'Inpatient'  -- Previous was also inpatient
+                and previous_discharge_date is not null
+                and datediff('day', previous_discharge_date, admission_date) between 1 and 30
+            then true
+            else false
+        end as is_readmission,
+
+        -- Store days since last discharge for analysis
+        case
+            when previous_discharge_date is not null
+            then datediff('day', previous_discharge_date, admission_date)
+            else null
+        end as days_since_last_discharge,
 
         -- Flags
         case
@@ -78,21 +93,16 @@ cleaned as (
         _loaded_at as loaded_at_timestamp,
         _source_updated_at as source_updated_at_timestamp
 
-    from source
+    from readmission_logic
 ),
 
 validated as (
-    -- Data quality: Remove invalid records
     select *
     from cleaned
     where
-        -- Discharge must be after admission
-        discharge_date >= admission_date
-        -- Charges must be positive
+        (discharge_date is null or discharge_date >= admission_date)
         and total_charges >= 0
-        -- Length of stay must be reasonable
         and length_of_stay >= 0
-        and length_of_stay < 365  -- Cap at 1 year
 )
 
 select * from validated

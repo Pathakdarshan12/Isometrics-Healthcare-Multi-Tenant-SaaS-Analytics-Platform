@@ -49,7 +49,7 @@ renamed as (
 
         case
             when payment_status in ('Paid', 'Partial')
-            then payment_amount * 100.0 / nullif(charge_amount, 0)
+            then ((payment_amount+adjustment_amount) * 100.0) / nullif(charge_amount, 0)
             else 0
         end as collection_rate_pct,
 

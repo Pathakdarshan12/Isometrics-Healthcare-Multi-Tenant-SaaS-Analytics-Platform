@@ -17,6 +17,34 @@ facilities as (
     select * from {{ ref('stg_healthcare__facilities') }}
 ),
 
+-- Generate date spine for occupancy calculation
+date_spine as (
+    select distinct
+        e.hospital_id,
+        d.date_day as metric_date
+    from encounters e
+    cross join (
+        select distinct admission_date_day as date_day
+        from encounters
+        where admission_date_day is not null
+    ) d
+),
+
+-- Calculate daily census (occupied beds)
+daily_census as (
+    select
+        ds.hospital_id,
+        ds.metric_date,
+        count(distinct e.encounter_id) as occupied_beds
+    from date_spine ds
+    left join encounters e
+        on ds.hospital_id = e.hospital_id
+        and ds.metric_date >= e.admission_date_day
+        and ds.metric_date < coalesce(e.discharge_date, current_date() + 1)
+        and e.encounter_type = 'Inpatient'
+    group by ds.hospital_id, ds.metric_date
+),
+
 daily_operational_metrics as (
     select
         e.hospital_id,
@@ -67,26 +95,44 @@ daily_operational_metrics as (
     group by e.hospital_id, e.admission_date_day
 ),
 
+hospital_capacity as (
+    select
+        f.hospital_id,
+        sum(case when f.facility_type in ('Medical-Surgical Unit', 'Intensive Care Unit')
+            then f.bed_capacity else 0 end) as total_bed_capacity,
+        sum(case when f.facility_type = 'Intensive Care Unit'
+            then f.bed_capacity else 0 end) as icu_bed_capacity,
+        sum(case when f.facility_type = 'Medical-Surgical Unit'
+            then f.bed_capacity else 0 end) as medsurg_bed_capacity
+    from facilities f
+    group by f.hospital_id
+),
+
 with_capacity as (
     select
         m.*,
 
-        -- Get hospital bed capacity (using any facility from that hospital)
-        (
-            select sum(f.bed_capacity)
-            from facilities f
-            where f.hospital_id = m.hospital_id
-              and f.facility_type in ('Medical-Surgical Unit', 'Intensive Care Unit')
-        ) as total_bed_capacity,
+        -- Bed capacity
+        coalesce(hc.total_bed_capacity, 0) as total_bed_capacity,
+        coalesce(hc.icu_bed_capacity, 0) as icu_bed_capacity,
+        coalesce(hc.medsurg_bed_capacity, 0) as medsurg_bed_capacity,
 
-        -- Calculate bed occupancy rate
+        -- Occupied beds from census
+        coalesce(dc.occupied_beds, 0) as occupied_beds,
+
+        -- Correct bed occupancy rate (occupied beds / total capacity)
         case
-            when total_bed_capacity > 0
-            then (m.total_patient_days * 100.0) / total_bed_capacity
+            when coalesce(hc.total_bed_capacity, 0) > 0
+            then (coalesce(dc.occupied_beds, 0) * 100.0) / hc.total_bed_capacity
             else 0
         end as bed_occupancy_rate_pct
 
     from daily_operational_metrics m
+    left join hospital_capacity hc
+        on m.hospital_id = hc.hospital_id
+    left join daily_census dc
+        on m.hospital_id = dc.hospital_id
+        and m.metric_date = dc.metric_date
 )
 
 select * from with_capacity

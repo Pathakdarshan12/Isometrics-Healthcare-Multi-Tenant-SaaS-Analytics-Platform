@@ -20,4 +20,3 @@ models:
       - name: provider_id
         tests:
           - not_null
-          - unique

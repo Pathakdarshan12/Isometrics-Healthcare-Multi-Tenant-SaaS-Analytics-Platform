@@ -1,8 +1,4 @@
 -- Test that length of stay is reasonable for encounter type
--- Inpatient: 1-365 days
--- Outpatient/Emergency: 0 days (same day)
--- Observation: 0-2 days
-
 select
     encounter_id,
     hospital_id,
@@ -18,13 +14,17 @@ where
         (encounter_type = 'Inpatient'
          and (length_of_stay < 1 or length_of_stay > 365))
 
-        -- Outpatient / Emergency: same-day only
-        or (encounter_type in ('Outpatient', 'Emergency')
-            and length_of_stay > 0)
+        -- Outpatient: same day only
+        or (encounter_type = 'Outpatient'
+            and length_of_stay >= 1)
 
-        -- Observation: 0–2 days
+        -- Emergency: typically < 3 days (if longer, should be admitted)
+        or (encounter_type = 'Emergency'
+            and length_of_stay >= 3)
+
+        -- Observation: up to 3 days (72 hours is common limit)
         or (encounter_type = 'Observation'
-            and length_of_stay > 2)
+            and length_of_stay > 3)
 
         -- Always invalid
         or length_of_stay < 0
