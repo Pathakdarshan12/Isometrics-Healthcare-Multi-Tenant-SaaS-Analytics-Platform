@@ -1,6 +1,7 @@
 version: 2
 
 models:
+
   - name: stg_healthcare__hospitals
     description: >
       Hospital master data (tenants).
@@ -14,14 +15,17 @@ models:
         tests:
           - not_null
           - unique
+
       - name: hospital_name
         tests:
           - not_null
+
       - name: contract_tier
         tests:
           - accepted_values:
               arguments:
                 values: ['Basic', 'Advanced', 'Enterprise']
+
 
   - name: stg_healthcare__patients
     description: >
@@ -37,6 +41,7 @@ models:
         tests:
           - not_null
           - unique
+
       - name: hospital_id
         description: "🔒 CRITICAL: Hospital identifier for RLS"
         tests:
@@ -45,6 +50,7 @@ models:
               arguments:
                 to: ref('stg_healthcare__hospitals')
                 field: hospital_id
+
       - name: age_years
         description: "Current age in years"
         tests:
@@ -52,11 +58,13 @@ models:
               arguments:
                 min_value: 0
                 max_value: 120
+
       - name: age_group
         tests:
           - accepted_values:
               arguments:
-               values: ['Pediatric', 'Adult', 'Geriatric', 'Unknown']
+                values: ['Pediatric', 'Adult', 'Geriatric', 'Unknown']
+
 
   - name: stg_healthcare__providers
     description: "Provider roster - physicians, nurses, specialists"
@@ -68,6 +76,7 @@ models:
         tests:
           - not_null
           - unique
+
       - name: hospital_id
         description: "🔒 CRITICAL for RLS"
         tests:
@@ -76,10 +85,12 @@ models:
               arguments:
                 to: ref('stg_healthcare__hospitals')
                 field: hospital_id
+
       - name: npi
         description: "National Provider Identifier"
         tests:
           - not_null
+
 
   - name: stg_healthcare__facilities
     description: "Facility/department master data"
@@ -88,10 +99,12 @@ models:
         tests:
           - not_null
           - unique
+
       - name: hospital_id
         description: "🔒 CRITICAL for RLS"
         tests:
           - not_null
+
 
   - name: stg_healthcare__encounters
     description: >
@@ -107,6 +120,7 @@ models:
         tests:
           - not_null
           - unique
+
       - name: hospital_id
         description: "🔒 CRITICAL for RLS"
         tests:
@@ -115,6 +129,7 @@ models:
               arguments:
                 to: ref('stg_healthcare__hospitals')
                 field: hospital_id
+
       - name: patient_id
         tests:
           - not_null
@@ -122,6 +137,7 @@ models:
               arguments:
                 to: ref('stg_healthcare__patients')
                 field: patient_id
+
       - name: provider_id
         tests:
           - not_null
@@ -129,11 +145,13 @@ models:
               arguments:
                 to: ref('stg_healthcare__providers')
                 field: provider_id
+
       - name: encounter_type
         tests:
           - accepted_values:
               arguments:
                 values: ['Inpatient', 'Outpatient', 'Emergency', 'Observation']
+
       - name: length_of_stay
         tests:
           - not_null
@@ -141,10 +159,272 @@ models:
               arguments:
                 min_value: 0
                 max_value: 365
+
       - name: total_charges
         tests:
           - not_null
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-                inclusive: true
+
+  - name: stg_healthcare__clinical_orders
+    description: >
+      Clinical orders for labs, radiology, medications, and procedures.
+      Tracks order lifecycle from placement to completion.
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: ['order_datetime', 'scheduled_datetime', 'completed_datetime']
+        owner: "clinical-data-team@company.com"
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - unique
+
+      - name: hospital_id
+        tests:
+          - not_null
+
+      - name: order_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['LAB', 'RADIOLOGY', 'MEDICATION', 'PROCEDURE']
+
+      - name: order_status
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['ORDERED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']
+
+      - name: priority
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['STAT', 'URGENT', 'ROUTINE']
+
+  - name: stg_healthcare__clinical_results
+    description: >
+      Laboratory results, vital signs, imaging reports, and pathology findings.
+      Core table for clinical decision support and quality metrics.
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: ['result_datetime', 'collected_datetime', 'resulted_datetime']
+        owner: "clinical-data-team@company.com"
+    columns:
+      - name: result_id
+        tests:
+          - not_null
+          - unique
+
+      - name: hospital_id
+        tests:
+          - not_null
+
+      - name: result_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['LAB', 'VITALS', 'IMAGING', 'PATHOLOGY']
+
+      - name: result_status
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['PRELIMINARY', 'FINAL', 'CORRECTED', 'CANCELLED']
+
+      - name: abnormal_flag
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['H', 'L', 'A', 'N']
+
+  - name: stg_healthcare__vital_signs
+    description: >
+      Patient vital signs measurements including temperature, blood pressure,
+      heart rate, respiratory rate, and oxygen saturation.
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: ['measurement_datetime']
+        owner: "clinical-data-team@company.com"
+    columns:
+      - name: vital_id
+        tests:
+          - not_null
+          - unique
+
+      - name: hospital_id
+        tests:
+          - not_null
+
+      - name: temperature_f
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 90
+                max_value: 110
+
+      - name: heart_rate_bpm
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 30
+                max_value: 250
+
+      - name: oxygen_saturation_pct
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 50
+                max_value: 100
+
+  - name: stg_healthcare__problem_list
+    description: >
+      Active and historical patient diagnoses beyond encounters.
+      Tracks chronic conditions and ongoing health issues.
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: ['onset_date', 'resolution_date']
+        owner: "clinical-data-team@company.com"
+    columns:
+      - name: problem_id
+        tests:
+          - not_null
+          - unique
+
+      - name: hospital_id
+        tests:
+          - not_null
+
+      - name: problem_status
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['ACTIVE', 'RESOLVED', 'INACTIVE']
+
+
+  - name: stg_healthcare__medication_administration
+    description: >
+      Actual medication administration records (MAR).
+      Documents when medications were given, held, or refused.
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: ['scheduled_datetime', 'administered_datetime']
+        owner: "clinical-data-team@company.com"
+    columns:
+      - name: admin_id
+        tests:
+          - not_null
+          - unique
+
+      - name: hospital_id
+        tests:
+          - not_null
+
+      - name: administration_status
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['GIVEN', 'REFUSED', 'HELD', 'MISSED']
+
+
+  - name: stg_healthcare__patient_allergies
+    description: >
+      Patient allergy and adverse reaction history.
+      Critical for medication safety and clinical decision support.
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: ['onset_date', 'resolution_date']
+        owner: "clinical-data-team@company.com"
+    columns:
+      - name: allergy_id
+        tests:
+          - not_null
+          - unique
+
+      - name: hospital_id
+        tests:
+          - not_null
+
+      - name: allergen_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['DRUG', 'FOOD', 'ENVIRONMENTAL']
+
+      - name: severity
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['MILD', 'MODERATE', 'SEVERE', 'LIFE_THREATENING']
+
+
+  - name: stg_healthcare__patient_coverage
+    description: >
+      Patient insurance coverage and benefit information.
+      Tracks deductibles, out-of-pocket maximums, and coverage periods.
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: ['policy_number', 'subscriber_id', 'subscriber_name']
+        owner: "financial-analytics@company.com"
+    columns:
+      - name: coverage_id
+        tests:
+          - not_null
+          - unique
+
+      - name: hospital_id
+        tests:
+          - not_null
+
+      - name: coverage_status
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['ACTIVE', 'TERMINATED', 'SUSPENDED']
+
+      - name: plan_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['HMO', 'PPO', 'EPO', 'POS']
+
+
+  - name: stg_healthcare__sdoh_screenings
+    description: >
+      Social Determinants of Health (SDOH) screening data.
+      Captures housing, food security, transportation, and social support needs.
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: ['screening_date']
+        owner: "population-health-team@company.com"
+    columns:
+      - name: screening_id
+        tests:
+          - not_null
+          - unique
+
+      - name: hospital_id
+        tests:
+          - not_null
+
+      - name: sdoh_risk_category
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['No Risk', 'Low Risk', 'Medium Risk', 'High Risk']
+
+      - name: total_sdoh_risk_count
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 7

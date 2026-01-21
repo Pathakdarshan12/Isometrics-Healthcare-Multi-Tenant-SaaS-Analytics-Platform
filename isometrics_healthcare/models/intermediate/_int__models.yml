@@ -93,3 +93,193 @@ models:
                 min_value: 0
                 max_value: 100
                 inclusive: true
+
+  - name: int_clinical__orders_enriched
+    description: >
+      Enriched clinical orders with full encounter, patient, and provider context.
+      Includes timing metrics, procedure cost data, and performance flags.
+      Used for order management dashboards and turnaround time analysis.
+    config:
+      meta:
+        contains_phi: true
+        owner: "clinical-data-team@company.com"
+    columns:
+      - name: order_id
+        description: "Unique order identifier"
+        tests:
+          - not_null
+          - unique
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: completion_time_hours
+        description: "Hours from order to completion"
+      - name: stat_order_delayed
+        description: "Flag for STAT orders taking >1 hour"
+      - name: lab_turnaround_delayed
+        description: "Flag for lab results taking >24 hours"
+
+  - name: int_clinical__vitals_enriched
+    description: >
+      Enriched vital signs with trend analysis, Early Warning Scores (NEWS),
+      and deterioration detection. Includes previous vital comparisons and
+      composite clinical alerts (sepsis, respiratory distress, etc.).
+    config:
+      meta:
+        contains_phi: true
+        owner: "clinical-data-team@company.com"
+    columns:
+      - name: vital_id
+        description: "Unique vital signs record identifier"
+        tests:
+          - not_null
+          - unique
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: total_news_score
+        description: "Total National Early Warning Score (0-20)"
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 20
+      - name: news_risk_category
+        description: "Risk category based on NEWS score"
+        tests:
+          - accepted_values:
+              arguments:
+                values: [ 'Normal', 'Low Risk', 'Medium Risk', 'High Risk' ]
+      - name: rapid_deterioration_flag
+        description: "Flag for rapid vital sign changes"
+      - name: sepsis_alert
+        description: "Composite flag: hypotension + tachycardia + hypoxia"
+      - name: respiratory_distress_alert
+        description: "Composite flag: hypoxia + tachypnea"
+
+  - name: int_clinical__medication_safety
+    description: >
+      Medication administration with comprehensive safety checks including
+      allergy screening, verification tracking, timing compliance, and
+      adverse reaction monitoring. Critical for medication safety analysis.
+    config:
+      meta:
+        contains_phi: true
+        owner: "clinical-data-team@company.com"
+    columns:
+      - name: admin_id
+        description: "Unique medication administration record ID"
+        tests:
+          - not_null
+          - unique
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: potential_allergy_conflict
+        description: "Flag for medication matching known allergy"
+      - name: given_despite_allergy
+        description: "CRITICAL: Medication given despite allergy match"
+      - name: given_without_verification
+        description: "Medication given without barcode scan"
+      - name: is_high_risk_medication
+        description: "Flag for high-alert medications"
+      - name: iv_given_without_witness
+        description: "IV medication given without witness"
+      - name: late_administration
+        description: "Medication given >60 min after scheduled time"
+
+  - name: int_clinical__patient_profile
+    description: >
+      Comprehensive 360-degree patient profile aggregating clinical complexity,
+      allergies, insurance, recent vitals, SDOH factors, encounter history,
+      and medication adherence. Includes risk stratification and utilization
+      categorization. Core model for care management and population health.
+    config:
+      meta:
+        contains_phi: true
+        owner: "population-health-team@company.com"
+    columns:
+      - name: patient_id
+        description: "Unique patient identifier"
+        tests:
+          - not_null
+          - unique
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: chronic_condition_count
+        description: "Count of active chronic conditions"
+      - name: life_threatening_allergy_count
+        description: "Count of life-threatening allergies"
+      - name: latest_news_score
+        description: "Most recent Early Warning Score"
+      - name: current_sdoh_risk_category
+        description: "Current social determinant risk level"
+        tests:
+          - accepted_values:
+              arguments:
+                values: [ 'No Risk', 'Low Risk', 'Medium Risk', 'High Risk', null ]
+      - name: clinical_risk_category
+        description: "Overall clinical risk stratification"
+        tests:
+          - accepted_values:
+              arguments:
+                values: [ 'Low Risk', 'Medium Risk', 'High Risk', 'Very High Risk' ]
+      - name: utilization_category
+        description: "Healthcare utilization pattern"
+        tests:
+          - accepted_values:
+              arguments:
+                values: [ 'Low Utilizer', 'Moderate Utilizer', 'High Utilizer',
+                        'Frequent Admits', 'Frequent ED User' ]
+      - name: patient_engagement_score
+        description: "Patient engagement score (0-100)"
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+
+  - name: int_clinical__lab_results_enriched
+    description: >
+      Enriched laboratory results with trend analysis, critical value detection,
+      and panel categorization. Includes previous result comparisons for
+      longitudinal trending and percent change calculations.
+    config:
+      meta:
+        contains_phi: true
+        owner: "clinical-data-team@company.com"
+    columns:
+      - name: result_id
+        description: "Unique lab result identifier"
+        tests:
+          - not_null
+          - unique
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: is_critical_value
+        description: "Flag for critical laboratory values requiring notification"
+      - name: lab_panel_category
+        description: "Categorization of lab test type"
+        tests:
+          - accepted_values:
+              arguments:
+              values: [ 'Complete Blood Count', 'Basic Metabolic Panel',
+                        'Comprehensive Metabolic Panel', 'Liver Function Panel',
+                        'Lipid Panel', 'Cardiac Marker', 'Coagulation Panel', 'Other' ]
+      - name: trend_direction
+        description: "Result trend compared to previous value"
+        tests:
+          - accepted_values:
+              arguments:
+                values: [ 'First Result', 'Increasing', 'Decreasing', 'Stable' ]
+      - name: result_change_pct
+        description: "Percent change from previous result"
+      - name: turnaround_time_hours
+        description: "Hours from collection to result"

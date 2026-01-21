@@ -26,7 +26,7 @@ vars:
   # Elementary configuration
   elementary:
     profiles_dir: "~/.dbt"
-    target: "dev"
+    target: "elementary"
 
 # Model configurations
 models:
@@ -34,7 +34,7 @@ models:
     +materialized: view
     +on_schema_change: "fail"
     +meta:
-      contains_phi: false  # Default: no PHI unless specified
+      contains_phi: false
 
     staging:
       +materialized: view
@@ -82,10 +82,9 @@ models:
         +meta:
           sla_hours: 1
 
-  elementary:
-    +schema: "elementary"
-    +database: ISOMETRICS_DEV
-    +materialized: table
+    elementary:
+      +target_schema: elementary
+      +materialized: table
 
 snapshots:
   isometrics_healthcare:

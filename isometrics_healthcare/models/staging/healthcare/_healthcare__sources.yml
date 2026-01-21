@@ -150,3 +150,203 @@ sources:
             description: "🔒 CRITICAL for RLS"
             tests:
               - not_null
+
+      - name: raw_clinical_orders
+        description: >
+          ⚠️ PHI WARNING: Clinical orders (labs, radiology, medications, procedures).
+          Contains: Order timestamps, patient linkage
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['order_datetime', 'scheduled_datetime', 'completed_datetime']
+        columns:
+          - name: order_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('healthcare', 'raw_hospitals')
+                    field: hospital_id
+
+          - name: order_type
+            tests:
+              - accepted_values:
+                  arguments:
+                    values: ['LAB', 'RADIOLOGY', 'MEDICATION', 'PROCEDURE']
+
+      - name: raw_clinical_results
+        description: >
+          ⚠️ PHI WARNING: Laboratory results, imaging reports, pathology findings.
+          Contains: Result timestamps, patient linkage
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['result_datetime', 'collected_datetime', 'resulted_datetime']
+        columns:
+          - name: result_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]
+
+      - name: raw_vital_signs
+        description: >
+          ⚠️ PHI WARNING: Patient vital signs measurements.
+          Contains: Measurement timestamps, patient linkage
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['measurement_datetime']
+        columns:
+          - name: vital_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]
+
+      - name: raw_problem_list
+        description: >
+          ⚠️ PHI WARNING: Active and historical patient diagnoses.
+          Contains: Diagnosis dates, patient linkage
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['onset_date', 'resolution_date']
+        columns:
+          - name: problem_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]
+
+      - name: raw_medication_administration
+        description: >
+          ⚠️ PHI WARNING: Medication administration records (MAR).
+          Contains: Administration timestamps, patient linkage
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['scheduled_datetime', 'administered_datetime']
+        columns:
+          - name: admin_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]
+
+      - name: raw_patient_allergies
+        description: >
+          ⚠️ PHI WARNING: Patient allergy and adverse reaction history.
+          Contains: Patient linkage, allergy dates
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['onset_date', 'resolution_date']
+        columns:
+          - name: allergy_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]
+
+      - name: raw_care_plans
+        description: >
+          ⚠️ PHI WARNING: Nursing care plans and interventions.
+          Contains: Patient linkage, care plan dates
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['start_date', 'target_date', 'completion_date']
+        columns:
+          - name: care_plan_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]
+
+      - name: raw_patient_coverage
+        description: >
+          ⚠️ PHI WARNING: Patient insurance coverage information.
+          Contains: Policy numbers, subscriber information
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['policy_number', 'subscriber_id', 'subscriber_name']
+        columns:
+          - name: coverage_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]
+
+      - name: raw_prior_authorizations
+        description: >
+          Prior authorization tracking for services and medications.
+          Contains: Authorization numbers, clinical justification
+        config:
+          meta:
+            contains_phi: false
+        columns:
+          - name: auth_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]
+
+      - name: raw_sdoh_screenings
+        description: >
+          ⚠️ PHI WARNING: Social Determinants of Health screenings.
+          Contains: Patient linkage, screening dates
+        config:
+          meta:
+            contains_phi: true
+            phi_fields: ['screening_date']
+        columns:
+          - name: screening_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]
+
+      - name: raw_quality_measures
+        description: >
+          CMS Core Measures and quality metric tracking.
+          Contains: Measure performance, timing metrics
+        config:
+          meta:
+            contains_phi: false
+        columns:
+          - name: measure_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]
+
+      - name: raw_referrals
+        description: >
+          Outpatient referrals and care coordination tracking.
+          Contains: Referral dates, provider information
+        config:
+          meta:
+            contains_phi: false
+        columns:
+          - name: referral_id
+            tests: [not_null, unique]
+
+          - name: hospital_id
+            description: "🔒 CRITICAL for RLS"
+            tests: [not_null]

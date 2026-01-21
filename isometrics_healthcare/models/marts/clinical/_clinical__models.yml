@@ -18,3 +18,206 @@ models:
         tests:
           - not_null
           - unique
+
+  - name: fct_medication_safety_metrics
+    description: >
+      Daily medication safety dashboard tracking administration compliance,
+      safety violations (allergy conflicts, missing verification), adverse events,
+      and timing compliance. Includes overall medication safety scoring.
+    config:
+      meta:
+        contains_phi: false
+        owner: "quality-safety@company.com"
+        refresh_frequency: "daily"
+    columns:
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: metric_date
+        description: "Date of metrics"
+        tests:
+          - not_null
+      - name: medication_safety_score
+        description: "Overall safety score (0-100)"
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: allergy_violations
+        description: "⚠️ CRITICAL: Medications given despite allergy match"
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 10
+                inclusive: true
+                severity: error
+      - name: verification_rate_pct
+        description: "Percentage of medications with barcode verification"
+      - name: adverse_reaction_rate_pct
+        description: "Rate of adverse drug reactions"
+
+  - name: fct_early_warning_surveillance
+    description: >
+      Early Warning Score (NEWS) surveillance dashboard tracking patient
+      deterioration, vital sign alerts, and composite clinical alerts
+      (sepsis, respiratory distress). Critical for rapid response activation.
+    config:
+      meta:
+        contains_phi: false
+        owner: "quality-safety@company.com"
+        refresh_frequency: "hourly"
+    columns:
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: metric_date
+        description: "Date of surveillance"
+        tests:
+          - not_null
+      - name: high_risk_patients
+        description: "Count of patients with NEWS >= 7"
+      - name: sepsis_alerts
+        description: "⚠️ CRITICAL: Potential sepsis cases requiring evaluation"
+      - name: rapid_deterioration_events
+        description: "⚠️ Rapid vital sign changes requiring attention"
+      - name: surveillance_quality_score
+        description: "Overall surveillance quality (0-100)"
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+
+  - name: fct_laboratory_quality_metrics
+    description: >
+      Laboratory quality dashboard tracking turnaround times, critical values,
+      test volumes, and compliance with target timeframes. Includes STAT lab
+      performance and result finalization rates.
+    config:
+      meta:
+        contains_phi: false
+        owner: "laboratory-quality@company.com"
+        refresh_frequency: "daily"
+    columns:
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: metric_date
+        description: "Date of metrics"
+        tests:
+          - not_null
+      - name: critical_values
+        description: "Count of critical lab values requiring notification"
+      - name: median_turnaround_hours
+        description: "Median lab turnaround time"
+      - name: median_stat_turnaround_hours
+        description: "Median STAT lab turnaround time"
+      - name: lab_quality_score
+        description: "Overall lab quality score (0-100)"
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: turnaround_performance
+        description: "Turnaround time performance category"
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Excellent', 'Good', 'Fair', 'Needs Improvement']
+
+  - name: fct_population_health_dashboard
+    description: >
+      Current state population health snapshot aggregating chronic disease
+      burden, risk stratification, SDOH factors, utilization patterns,
+      and care management opportunities. Core dashboard for value-based care.
+    config:
+      meta:
+        contains_phi: false
+        owner: "population-health@company.com"
+        refresh_frequency: "daily"
+    columns:
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+          - unique
+      - name: total_population
+        description: "Total patient population"
+      - name: high_risk_prevalence_pct
+        description: "Percentage of population at high/very high risk"
+      - name: chronic_disease_prevalence_pct
+        description: "Percentage with chronic conditions"
+      - name: sdoh_risk_prevalence_pct
+        description: "Percentage with elevated SDOH risk"
+      - name: care_management_candidates
+        description: "Number of patients needing care management"
+      - name: population_health_score
+        description: "Overall population health score (0-100, higher is better)"
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: intervention_priority
+        description: "Priority level for intervention"
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Monitoring', 'Medium Priority', 'High Priority', 'Critical Priority']
+
+  - name: fct_cms_core_measures_performance_dashboard
+    description: >
+      CMS Core Measures performance tracking by quarter including sepsis bundles,
+      AMI care, and readmissions. Compares performance to CMS targets with
+      gap analysis. Critical for regulatory compliance and reimbursement.
+    config:
+      meta:
+        contains_phi: false
+        owner: "quality-improvement@company.com"
+        refresh_frequency: "weekly"
+    columns:
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: reporting_quarter
+        description: "Reporting quarter for CMS submission"
+        tests:
+          - not_null
+      - name: measure_code
+        description: "CMS measure identifier"
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['SEP-1', 'AMI-2', 'READM-30']
+      - name: denominator
+        description: "Number of eligible cases"
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 25
+      - name: numerator
+        description: "Number of cases meeting measure criteria"
+      - name: performance_rate_pct
+        description: "Performance rate as percentage"
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: cms_target_pct
+        description: "CMS target benchmark"
+      - name: performance_status
+        description: "Status vs CMS target"
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Meets Target', 'Near Target', 'Below Target']
+      - name: gap_to_target_pct
+        description: "Gap between performance and target"
