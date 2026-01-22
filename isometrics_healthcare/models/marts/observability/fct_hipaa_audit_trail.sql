@@ -149,7 +149,7 @@ phi_access_log as (
         case
             when qh.role_name not in (
                 'ACCOUNTADMIN', 'SYSADMIN', 'HIPAA_AUDITOR',
-                'DBT_DEV_ROLE', 'DBT_PROD_ROLE'
+                'DBT_DEV_ROLE', 'DBT_PROD_ROLE', 'DBT_CI_ROLE'
             )
             and qh.role_name not like 'HOSPITAL_%_PHI_ANALYST'
             and qh.role_name not like 'HOSPITAL_%_ANALYST'
