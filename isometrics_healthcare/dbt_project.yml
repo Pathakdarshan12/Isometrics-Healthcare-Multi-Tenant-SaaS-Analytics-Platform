@@ -23,11 +23,6 @@ vars:
   hipaa_compliant: true
   phi_encryption_required: true
 
-  # Elementary configuration
-  elementary:
-    profiles_dir: "~/.dbt"
-    target: "elementary"
-
 # Model configurations
 models:
   isometrics_healthcare:
@@ -81,10 +76,6 @@ models:
         +tags: ['marts', 'gold', 'operational', 'hourly']
         +meta:
           sla_hours: 1
-
-    elementary:
-      +target_schema: elementary
-      +materialized: table
 
 snapshots:
   isometrics_healthcare:

@@ -181,11 +181,6 @@ jobs:
           -- Drop CI schema
           DROP SCHEMA IF EXISTS ${{ env.CI_SCHEMA }} CASCADE;
           
-          -- clean up other schemas
-          DROP SCHEMA IF EXISTS RAW_PHI CASCADE;
-          DROP SCHEMA IF EXISTS STAGING CASCADE;
-          DROP SCHEMA IF EXISTS MARTS CASCADE;
-          
           SELECT 'Cleanup Complete' as status;
           EOF
           

@@ -8,7 +8,4 @@ packages:
   - name: audit_helper
     package: dbt-labs/audit_helper
     version: 0.12.2
-  - name: elementary
-    package: elementary-data/elementary
-    version: 0.21.0
-sha1_hash: 2678f9046a742d5a0cc21faa52df2845a305db8d
+sha1_hash: 8cdb26630634a3c1d34fd742df0c4decdeaea4d0
