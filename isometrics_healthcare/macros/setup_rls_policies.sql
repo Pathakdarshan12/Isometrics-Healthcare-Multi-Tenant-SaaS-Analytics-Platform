@@ -1,10 +1,8 @@
 {% macro setup_rls_policies() %}
 
   {% set sql %}
-    -- Create AUDIT schema
-    CREATE SCHEMA IF NOT EXISTS {{ target.database }}.AUDIT;
 
-    -- Create user_hospital_mapping table
+    -- Create mapping table in AUDIT
     CREATE OR REPLACE TABLE {{ target.database }}.AUDIT.user_hospital_mapping (
         user_name VARCHAR(255),
         role_name VARCHAR(255),
@@ -17,8 +15,8 @@
         PRIMARY KEY (user_name, role_name, hospital_id)
     ) COMMENT = 'User to hospital access mapping - HIPAA audited';
 
-    -- Create hospital_isolation_policy
-    CREATE OR REPLACE ROW ACCESS POLICY {{ target.database }}.AUDIT.hospital_isolation_policy
+    -- Create hospital_isolation_policy in RAW_PHI (where models expect it)
+    CREATE OR REPLACE ROW ACCESS POLICY {{ target.database }}.RAW_PHI.HOSPITAL_ISOLATION_POLICY
     AS (hospital_id VARCHAR) RETURNS BOOLEAN ->
       CASE
         WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN', 'SYSADMIN') THEN TRUE
@@ -40,8 +38,8 @@
       END
     COMMENT = 'HIPAA-compliant hospital isolation - CI environment';
 
-    -- Create phi_access_policy
-    CREATE OR REPLACE ROW ACCESS POLICY {{ target.database }}.AUDIT.phi_access_policy
+    -- Create phi_access_policy in RAW_PHI
+    CREATE OR REPLACE ROW ACCESS POLICY {{ target.database }}.RAW_PHI.PHI_ACCESS_POLICY
     AS (hospital_id VARCHAR) RETURNS BOOLEAN ->
       CASE
         WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN', 'PHI_ADMIN', 'HIPAA_AUDITOR') THEN TRUE
@@ -62,6 +60,6 @@
   {% endset %}
 
   {% do run_query(sql) %}
-  {% do log("RLS policies created successfully for " ~ target.database, info=True) %}
+  {% do log("RLS policies created successfully in RAW_PHI schema for " ~ target.database, info=True) %}
 
 {% endmacro %}
