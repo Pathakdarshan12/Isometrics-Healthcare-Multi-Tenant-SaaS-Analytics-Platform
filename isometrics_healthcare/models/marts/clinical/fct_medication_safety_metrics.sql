@@ -2,7 +2,9 @@
   config(
     materialized='table',
     tags=['marts', 'clinical_quality', 'medication_safety'],
-    cluster_by=['hospital_id', 'metric_date']
+    cluster_by=['hospital_id', 'metric_date'],
+    schema = 'marts',
+    post_hook=["{{ apply_rls_policy() }}"]
   )
 }}
 
