@@ -1,40 +1,41 @@
 name: dbt CI
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
 jobs:
   dbt-ci:
     name: dbt CI Tests
     runs-on: ubuntu-latest
-    
+    env:
+      CI_SCHEMA: dbt_ci_${{ github.event.pull_request.number || github.run_id }}
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
-      
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          python-version: "3.11"
+          cache: pip
 
       - name: Install dbt
         run: |
           pip install dbt-snowflake==1.11.0
-      
+
+      - name: Install SnowSQL
+        run: |
+          curl -sSLo snowsql.bash https://sfc-repo.snowflakecomputing.com/snowsql/bootstrap/1.2/linux_x86_64/snowsql-1.2.32-linux_x86_64.bash
+          SNOWSQL_DEST=~/bin SNOWSQL_LOGIN_SHELL=~/.profile bash snowsql.bash
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Verify SnowSQL installation
+        run: |
+          ~/bin/snowsql -v
+
       - name: 🔧 Setup dbt profile
         run: |
           mkdir -p ~/.dbt
@@ -50,48 +51,46 @@ jobs:
                 role: DBT_CI_ROLE
                 database: ISOMETRICS_CI
                 warehouse: DBT_CI_WH
-                schema: dbt_ci_${{ github.event.pull_request.number || github.run_id }}
+                schema: ${{ env.CI_SCHEMA }}
                 threads: 4
           EOF
 
-      - name: 🗄️ Create CI schemas
+      - name: 🔧 Setup CI environment (create schema)
         run: |
           cd isometrics_healthcare
           cat <<EOF > setup_ci.sql
           USE ROLE DBT_CI_ROLE;
-          USE DATABASE ISOMETRICS_CI;
-          CREATE SCHEMA IF NOT EXISTS RAW_PHI;
-          CREATE SCHEMA IF NOT EXISTS STAGING;
-          CREATE SCHEMA IF NOT EXISTS MARTS;
-          CREATE SCHEMA IF NOT EXISTS SNAPSHOTS;
-          CREATE SCHEMA IF NOT EXISTS dbt_ci_${{ github.run_id }};
+          USE WAREHOUSE DBT_CI_WH;
+          CREATE SCHEMA IF NOT EXISTS ISOMETRICS_CI.${{ env.CI_SCHEMA }};
           EOF
           
-          snowsql -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
+          ~/bin/snowsql -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
                   -u ${{ secrets.SNOWFLAKE_USER }} \
-                  -p ${{ secrets.SNOWFLAKE_PASSWORD }} \
+                  -o log_level=DEBUG \
                   -f setup_ci.sql
+        env:
+          SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PASSWORD }}
 
       - name: Install dbt packages
         run: |
           cd isometrics_healthcare
           dbt deps
-      
-      - name: dbt compile (syntax check)
+
+      - name: dbt compile
         run: |
           cd isometrics_healthcare
           dbt compile
 
-      - name: dbt run (build changed models)
+      - name: dbt run
         run: |
           cd isometrics_healthcare
           dbt run
 
-      - name: dbt test (test changed models)
+      - name: dbt test
         run: |
           cd isometrics_healthcare
           dbt test
-      
+
       - name: Verify RLS on all marts
         run: |
           cd isometrics_healthcare
@@ -110,16 +109,18 @@ jobs:
           name: dbt-test-results
           path: isometrics_healthcare/target/run_results.json
 
-      - name: 🧹 Cleanup CI environment
+      - name: 🧹 Cleanup CI environment (drop schema)
         if: always()
         run: |
           cd isometrics_healthcare
           cat <<EOF > cleanup_ci.sql
           USE ROLE DBT_CI_ROLE;
-          DROP SCHEMA IF EXISTS ISOMETRICS_CI.dbt_ci_${{ github.run_id }} CASCADE;
+          DROP SCHEMA IF EXISTS ISOMETRICS_CI.${{ env.CI_SCHEMA }} CASCADE;
           EOF
-
-          snowsql -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
+          
+          ~/bin/snowsql -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
                   -u ${{ secrets.SNOWFLAKE_USER }} \
-                  -p ${{ secrets.SNOWFLAKE_PASSWORD }} \
+                  -o log_level=DEBUG \
                   -f cleanup_ci.sql || true
+        env:
+          SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PASSWORD }}
