@@ -53,7 +53,25 @@ jobs:
                 schema: dbt_ci_${{ github.event.pull_request.number || github.run_id }}
                 threads: 4
           EOF
-      
+
+      - name: 🗄️ Create CI schemas
+        run: |
+          cd isometrics_healthcare
+          cat <<EOF > setup_ci.sql
+          USE ROLE DBT_CI_ROLE;
+          USE DATABASE ISOMETRICS_CI;
+          CREATE SCHEMA IF NOT EXISTS RAW_PHI;
+          CREATE SCHEMA IF NOT EXISTS STAGING;
+          CREATE SCHEMA IF NOT EXISTS MARTS;
+          CREATE SCHEMA IF NOT EXISTS SNAPSHOTS;
+          CREATE SCHEMA IF NOT EXISTS dbt_ci_${{ github.run_id }};
+          EOF
+          
+          snowsql -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
+                  -u ${{ secrets.SNOWFLAKE_USER }} \
+                  -p ${{ secrets.SNOWFLAKE_PASSWORD }} \
+                  -f setup_ci.sql
+
       - name: Install dbt packages
         run: |
           cd isometrics_healthcare
@@ -92,9 +110,16 @@ jobs:
           name: dbt-test-results
           path: isometrics_healthcare/target/run_results.json
 
-      - name: 🧹 Cleanup CI schema
+      - name: 🧹 Cleanup CI environment
         if: always()
         run: |
           cd isometrics_healthcare
-          # Drop the CI schema after tests complete
-          dbt run-operation drop_schema --args "{schema_name: dbt_ci_pr_${{ github.event.pull_request.number}}}" || true
+          cat <<EOF > cleanup_ci.sql
+          USE ROLE DBT_CI_ROLE;
+          DROP SCHEMA IF EXISTS ISOMETRICS_CI.dbt_ci_${{ github.run_id }} CASCADE;
+          EOF
+
+          snowsql -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
+                  -u ${{ secrets.SNOWFLAKE_USER }} \
+                  -p ${{ secrets.SNOWFLAKE_PASSWORD }} \
+                  -f cleanup_ci.sql || true
