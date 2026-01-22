@@ -55,13 +55,18 @@ jobs:
                 threads: 4
           EOF
 
-      - name: 🔧 Setup CI environment (create schema)
+      - name: 🔧 Setup CI environment (create schemas)
         run: |
           cd isometrics_healthcare
           cat <<EOF > setup_ci.sql
           USE ROLE DBT_CI_ROLE;
           USE WAREHOUSE DBT_CI_WH;
-          CREATE SCHEMA IF NOT EXISTS ISOMETRICS_CI.${{ env.CI_SCHEMA }};
+          USE DATABASE ISOMETRICS_CI;
+          CREATE SCHEMA IF NOT EXISTS RAW_PHI;
+          CREATE SCHEMA IF NOT EXISTS STAGING;
+          CREATE SCHEMA IF NOT EXISTS MARTS;
+          CREATE SCHEMA IF NOT EXISTS SNAPSHOTS;
+          CREATE SCHEMA IF NOT EXISTS ${{ env.CI_SCHEMA }};
           EOF
           
           ~/bin/snowsql -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
