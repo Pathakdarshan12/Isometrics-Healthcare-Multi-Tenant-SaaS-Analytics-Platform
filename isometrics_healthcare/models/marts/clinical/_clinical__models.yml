@@ -5,6 +5,7 @@ models:
     description: "Daily clinical quality metrics per hospital"
     columns:
       - name: hospital_id
+        description: "🔒 CRITICAL: Hospital identifier for RLS"
         tests:
           - not_null
       - name: metric_date

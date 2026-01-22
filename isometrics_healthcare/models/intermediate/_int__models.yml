@@ -270,9 +270,9 @@ models:
         tests:
           - accepted_values:
               arguments:
-              values: [ 'Complete Blood Count', 'Basic Metabolic Panel',
-                        'Comprehensive Metabolic Panel', 'Liver Function Panel',
-                        'Lipid Panel', 'Cardiac Marker', 'Coagulation Panel', 'Other' ]
+                values: [ 'Complete Blood Count', 'Basic Metabolic Panel',
+                          'Comprehensive Metabolic Panel', 'Liver Function Panel',
+                          'Lipid Panel', 'Cardiac Marker', 'Coagulation Panel', 'Other' ]
       - name: trend_direction
         description: "Result trend compared to previous value"
         tests:

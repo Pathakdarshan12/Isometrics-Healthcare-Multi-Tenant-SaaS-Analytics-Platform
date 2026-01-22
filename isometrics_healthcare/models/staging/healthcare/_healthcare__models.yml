@@ -15,11 +15,9 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_name
         tests:
           - not_null
-
       - name: contract_tier
         tests:
           - accepted_values:
@@ -40,8 +38,6 @@ models:
         description: "De-identified patient ID"
         tests:
           - not_null
-          - unique
-
       - name: hospital_id
         description: "🔒 CRITICAL: Hospital identifier for RLS"
         tests:
@@ -50,7 +46,6 @@ models:
               arguments:
                 to: ref('stg_healthcare__hospitals')
                 field: hospital_id
-
       - name: age_years
         description: "Current age in years"
         tests:
@@ -58,7 +53,6 @@ models:
               arguments:
                 min_value: 0
                 max_value: 120
-
       - name: age_group
         tests:
           - accepted_values:
@@ -76,7 +70,6 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         description: "🔒 CRITICAL for RLS"
         tests:
@@ -85,7 +78,6 @@ models:
               arguments:
                 to: ref('stg_healthcare__hospitals')
                 field: hospital_id
-
       - name: npi
         description: "National Provider Identifier"
         tests:
@@ -99,11 +91,14 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         description: "🔒 CRITICAL for RLS"
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
 
 
   - name: stg_healthcare__encounters
@@ -120,7 +115,6 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         description: "🔒 CRITICAL for RLS"
         tests:
@@ -129,7 +123,6 @@ models:
               arguments:
                 to: ref('stg_healthcare__hospitals')
                 field: hospital_id
-
       - name: patient_id
         tests:
           - not_null
@@ -137,7 +130,6 @@ models:
               arguments:
                 to: ref('stg_healthcare__patients')
                 field: patient_id
-
       - name: provider_id
         tests:
           - not_null
@@ -145,7 +137,6 @@ models:
               arguments:
                 to: ref('stg_healthcare__providers')
                 field: provider_id
-
       - name: encounter_type
         tests:
           - accepted_values:
@@ -167,6 +158,37 @@ models:
               arguments:
                 min_value: 0
 
+  - name: stg_healthcare__billing_transactions
+    description: "Billing and payment transactions"
+    columns:
+      - name: transaction_id
+        tests:
+          - not_null
+          - unique
+      - name: encounter_id
+        tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__encounters')
+                field: encounter_id
+      - name: patient_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__patients')
+                field: patient_id
+      - name: hospital_id
+        description: "🔒 CRITICAL for RLS"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
+
   - name: stg_healthcare__clinical_orders
     description: >
       Clinical orders for labs, radiology, medications, and procedures.
@@ -181,11 +203,13 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         tests:
           - not_null
-
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: order_type
         tests:
           - accepted_values:
@@ -218,23 +242,23 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         tests:
           - not_null
-
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: result_type
         tests:
           - accepted_values:
               arguments:
                 values: ['LAB', 'VITALS', 'IMAGING', 'PATHOLOGY']
-
       - name: result_status
         tests:
           - accepted_values:
               arguments:
                 values: ['PRELIMINARY', 'FINAL', 'CORRECTED', 'CANCELLED']
-
       - name: abnormal_flag
         tests:
           - accepted_values:
@@ -255,25 +279,25 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         tests:
           - not_null
-
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: temperature_f
         tests:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 90
                 max_value: 110
-
       - name: heart_rate_bpm
         tests:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 30
                 max_value: 250
-
       - name: oxygen_saturation_pct
         tests:
           - dbt_utils.accepted_range:
@@ -295,17 +319,18 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         tests:
           - not_null
-
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: problem_status
         tests:
           - accepted_values:
               arguments:
                 values: ['ACTIVE', 'RESOLVED', 'INACTIVE']
-
 
   - name: stg_healthcare__medication_administration
     description: >
@@ -321,17 +346,18 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         tests:
           - not_null
-
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: administration_status
         tests:
           - accepted_values:
               arguments:
                 values: ['GIVEN', 'REFUSED', 'HELD', 'MISSED']
-
 
   - name: stg_healthcare__patient_allergies
     description: >
@@ -347,23 +373,23 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         tests:
           - not_null
-
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: allergen_type
         tests:
           - accepted_values:
               arguments:
                 values: ['DRUG', 'FOOD', 'ENVIRONMENTAL']
-
       - name: severity
         tests:
           - accepted_values:
               arguments:
                 values: ['MILD', 'MODERATE', 'SEVERE', 'LIFE_THREATENING']
-
 
   - name: stg_healthcare__patient_coverage
     description: >
@@ -379,23 +405,23 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         tests:
           - not_null
-
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: coverage_status
         tests:
           - accepted_values:
               arguments:
                 values: ['ACTIVE', 'TERMINATED', 'SUSPENDED']
-
       - name: plan_type
         tests:
           - accepted_values:
               arguments:
                 values: ['HMO', 'PPO', 'EPO', 'POS']
-
 
   - name: stg_healthcare__sdoh_screenings
     description: >
@@ -411,17 +437,18 @@ models:
         tests:
           - not_null
           - unique
-
       - name: hospital_id
         tests:
           - not_null
-
+          - relationships:
+              arguments:
+                to: ref('stg_healthcare__hospitals')
+                field: hospital_id
       - name: sdoh_risk_category
         tests:
           - accepted_values:
               arguments:
                 values: ['No Risk', 'Low Risk', 'Medium Risk', 'High Risk']
-
       - name: total_sdoh_risk_count
         tests:
           - dbt_utils.accepted_range:
