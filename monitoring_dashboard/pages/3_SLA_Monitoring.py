@@ -215,7 +215,10 @@ if selected_hospital == "All Hospitals":
 st.subheader("⏰ Data Freshness Over Time")
 
 # Get historical data (last 24 hours)
-recent_df = df_sla[df_sla['check_timestamp'] >= datetime.now() - pd.Timedelta(hours=24)]
+# Make datetime timezone-aware to match the DataFrame
+from datetime import timezone
+
+recent_df = df_sla[df_sla['check_timestamp'] >= pd.Timestamp.now(tz='UTC') - pd.Timedelta(hours=24)]
 
 fig_freshness = go.Figure()
 

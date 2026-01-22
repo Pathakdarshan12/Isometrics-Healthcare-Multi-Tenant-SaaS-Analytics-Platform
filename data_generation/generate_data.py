@@ -1,14 +1,3 @@
-"""
-IsoMetrics Healthcare Data Generator - FIXED VERSION
-Fixes:
-1. Proper patient-hospital relationship tracking
-2. Correct encounter-patient-provider-facility relationships
-3. Proper readmission logic
-4. Correct LOS validation
-5. Proper date handling
-6. Fixed billing transaction relationships
-"""
-
 import pandas as pd
 import numpy as np
 from faker import Faker

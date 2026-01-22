@@ -16,7 +16,6 @@
 with source as (
     select *
     from {{ source('healthcare', 'raw_encounters') }}
-    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE')
 ),
 
 -- CRITICAL: Validate foreign key relationships have matching hospital_ids

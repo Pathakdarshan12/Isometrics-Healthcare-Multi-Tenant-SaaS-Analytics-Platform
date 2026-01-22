@@ -15,7 +15,6 @@
 
 with source as (
     select * from {{ source('healthcare', 'raw_providers') }}
-    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
 
 renamed as (

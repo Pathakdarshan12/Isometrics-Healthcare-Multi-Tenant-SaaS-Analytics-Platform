@@ -142,7 +142,6 @@ models:
           - accepted_values:
               arguments:
                 values: ['Inpatient', 'Outpatient', 'Emergency', 'Observation']
-
       - name: length_of_stay
         tests:
           - not_null
@@ -150,7 +149,6 @@ models:
               arguments:
                 min_value: 0
                 max_value: 365
-
       - name: total_charges
         tests:
           - not_null
@@ -215,13 +213,11 @@ models:
           - accepted_values:
               arguments:
                 values: ['LAB', 'RADIOLOGY', 'MEDICATION', 'PROCEDURE']
-
       - name: order_status
         tests:
           - accepted_values:
               arguments:
                 values: ['ORDERED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']
-
       - name: priority
         tests:
           - accepted_values:
