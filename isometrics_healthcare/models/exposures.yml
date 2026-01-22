@@ -1,0 +1,21 @@
+version: 2
+
+exposures:
+  - name: streamlit_app
+    label: Streamlit - Dashboard
+    type: application
+    maturity: high
+    description: >
+      Streamlit app for monitoring
+    owner:
+      name: healthcare-data-team
+      email: healthcare-data-team@company.com
+
+    depends_on:
+      - ref('fct_sla_monitoring')
+      - ref('fct_hipaa_audit_trail')
+      - ref('fct_cost_attribution')
+      - ref('fct_clinical_quality_metrics')
+      - ref('fct_operational_metrics')
+      - ref('stg_healthcare__hospitals')
+      - ref('fct_financial_performance')

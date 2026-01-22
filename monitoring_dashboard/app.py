@@ -112,19 +112,24 @@ def load_cost_attribution():
     query = """
     SELECT 
         hospital_id,
-        query_date,
-        query_count,
-        total_gb_scanned,
-        estimated_cost_usd,
+        metric_date,
+        queries_executed,
+        total_execution_time_seconds,
+        cloud_services_cost_usd,
+        warehouse_cost_usd,
+        total_cost_usd,
+        total_credits_used,
         cumulative_cost_usd,
+        cost_7days_ago,
         cost_change_pct_wow,
-        cost_per_query
+        calculation_method,
+        note,
+        _dbt_loaded_at
     FROM DBT_DEV_MARTS.FCT_COST_ATTRIBUTION
-    WHERE query_date >= DATEADD('day', -30, CURRENT_DATE())
-    ORDER BY query_date DESC
+    WHERE metric_date >= DATEADD('day', -30, CURRENT_DATE())
+    ORDER BY metric_date DESC
     """
     return run_query(query)
-
 
 def load_clinical_quality():
     """Load clinical quality metrics"""
@@ -209,16 +214,54 @@ def create_sla_gauge(value, title, thresholds={'good': 99, 'warning': 95}):
 
 
 def create_cost_trend(df):
-    """Create cost trend chart"""
+    """Create cost trend visualization"""
+    # Aggregate daily costs
+    daily_cost = df.groupby('metric_date').agg({
+        'total_cost_usd': 'sum',
+        'warehouse_cost_usd': 'sum',
+        'cloud_services_cost_usd': 'sum'
+    }).reset_index()
+
+    # Create main line chart with total_cost_usd (NOT estimated_cost_usd!)
     fig = px.line(
-        df,
-        x='query_date',
-        y='estimated_cost_usd',
-        color='hospital_id',
-        title='Daily Cost Trends by Hospital',
-        labels={'estimated_cost_usd': 'Cost (USD)', 'query_date': 'Date'}
+        daily_cost,
+        x='metric_date',
+        y='total_cost_usd',
+        title='Daily Cost Trend',
+        labels={
+            'metric_date': 'Date',
+            'total_cost_usd': 'Total Cost (USD)'
+        }
     )
-    fig.update_layout(height=400)
+
+    # Add warehouse and cloud services as additional traces
+    fig.add_scatter(
+        x=daily_cost['metric_date'],
+        y=daily_cost['warehouse_cost_usd'],
+        mode='lines',
+        name='Warehouse Cost',
+        line=dict(dash='dash')
+    )
+
+    fig.add_scatter(
+        x=daily_cost['metric_date'],
+        y=daily_cost['cloud_services_cost_usd'],
+        mode='lines',
+        name='Cloud Services Cost',
+        line=dict(dash='dot')
+    )
+
+    fig.update_layout(
+        hovermode='x unified',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
+    )
+
     return fig
 
 
@@ -504,32 +547,70 @@ def main():
             col1, col2, col3, col4 = st.columns(4)
 
             with col1:
-                total_cost = cost_df['estimated_cost_usd'].sum()
+                total_cost = cost_df['total_cost_usd'].sum()
                 st.metric(
                     "Total Cost (Period)",
                     f"${total_cost:,.2f}"
                 )
 
             with col2:
-                avg_daily_cost = cost_df.groupby('query_date')['estimated_cost_usd'].sum().mean()
+                avg_daily_cost = cost_df.groupby('metric_date')['total_cost_usd'].sum().mean()
                 st.metric(
                     "Avg Daily Cost",
                     f"${avg_daily_cost:,.2f}"
                 )
 
             with col3:
-                total_queries = cost_df['query_count'].sum()
+                total_queries = cost_df['queries_executed'].sum()
                 st.metric(
                     "Total Queries",
                     f"{total_queries:,.0f}"
                 )
 
             with col4:
-                avg_cost_per_query = cost_df['cost_per_query'].mean()
+                avg_cost_per_query = cost_df['total_cost_usd'].sum() / cost_df['queries_executed'].sum() if cost_df[
+                                                                                                                'queries_executed'].sum() > 0 else 0
                 st.metric(
                     "Avg Cost per Query",
                     f"${avg_cost_per_query:.4f}"
                 )
+
+            # Additional metrics row
+            col5, col6, col7, col8 = st.columns(4)
+
+            with col5:
+                total_credits = cost_df['total_credits_used'].sum()
+                st.metric(
+                    "Total Credits Used",
+                    f"{total_credits:,.2f}"
+                )
+
+            with col6:
+                avg_execution_time = cost_df['total_execution_time_seconds'].mean()
+                st.metric(
+                    "Avg Execution Time",
+                    f"{avg_execution_time:,.1f}s"
+                )
+
+            with col7:
+                total_warehouse_cost = cost_df['warehouse_cost_usd'].sum()
+                st.metric(
+                    "Warehouse Cost",
+                    f"${total_warehouse_cost:,.2f}"
+                )
+
+            with col8:
+                total_cloud_cost = cost_df['cloud_services_cost_usd'].sum()
+                st.metric(
+                    "Cloud Services Cost",
+                    f"${total_cloud_cost:,.2f}"
+                )
+
+            # Week-over-Week cost change
+            if 'cost_change_pct_wow' in cost_df.columns:
+                latest_wow = cost_df.sort_values('metric_date', ascending=False)['cost_change_pct_wow'].iloc[0]
+                if pd.notna(latest_wow):
+                    st.info(f"📊 Week-over-Week Cost Change: {latest_wow:+.1f}%")
 
             # Cost trend chart
             st.plotly_chart(
@@ -537,28 +618,94 @@ def main():
                 use_container_width=True
             )
 
+            # Cost breakdown by type
+            st.subheader("Cost Breakdown")
+            col_left, col_right = st.columns(2)
+
+            with col_left:
+                # Pie chart for cost components
+                cost_components = pd.DataFrame({
+                    'Cost Type': ['Warehouse Cost', 'Cloud Services Cost'],
+                    'Amount': [
+                        cost_df['warehouse_cost_usd'].sum(),
+                        cost_df['cloud_services_cost_usd'].sum()
+                    ]
+                })
+
+                fig_pie = px.pie(
+                    cost_components,
+                    values='Amount',
+                    names='Cost Type',
+                    title='Cost Distribution by Type'
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+            with col_right:
+                # Display cumulative cost trend
+                cumulative_data = cost_df.sort_values('metric_date')[
+                    ['metric_date', 'cumulative_cost_usd']].drop_duplicates('metric_date')
+                if not cumulative_data.empty:
+                    fig_cumulative = px.line(
+                        cumulative_data,
+                        x='metric_date',
+                        y='cumulative_cost_usd',
+                        title='Cumulative Cost Trend',
+                        labels={'cumulative_cost_usd': 'Cumulative Cost (USD)', 'metric_date': 'Date'}
+                    )
+                    st.plotly_chart(fig_cumulative, use_container_width=True)
+
             # Top cost hospitals
             st.subheader("Cost by Hospital")
             cost_by_hospital = cost_df.groupby('hospital_id').agg({
-                'estimated_cost_usd': 'sum',
-                'query_count': 'sum',
-                'total_gb_scanned': 'sum'
+                'total_cost_usd': 'sum',
+                'queries_executed': 'sum',
+                'warehouse_cost_usd': 'sum',
+                'cloud_services_cost_usd': 'sum',
+                'total_credits_used': 'sum',
+                'total_execution_time_seconds': 'sum'
             }).reset_index()
 
             cost_by_hospital.columns = [
-                'Hospital', 'Total Cost', 'Total Queries', 'Total GB Scanned'
+                'Hospital', 'Total Cost', 'Total Queries', 'Warehouse Cost',
+                'Cloud Services Cost', 'Credits Used', 'Execution Time (s)'
             ]
             cost_by_hospital = cost_by_hospital.sort_values('Total Cost', ascending=False)
+
+            # Add cost per query column
+            cost_by_hospital['Cost per Query'] = cost_by_hospital['Total Cost'] / cost_by_hospital['Total Queries']
 
             st.dataframe(
                 cost_by_hospital.style.format({
                     'Total Cost': '${:,.2f}',
                     'Total Queries': '{:,.0f}',
-                    'Total GB Scanned': '{:,.1f}'
+                    'Warehouse Cost': '${:,.2f}',
+                    'Cloud Services Cost': '${:,.2f}',
+                    'Credits Used': '{:,.2f}',
+                    'Execution Time (s)': '{:,.1f}',
+                    'Cost per Query': '${:.4f}'
                 }),
                 use_container_width=True,
                 hide_index=True
             )
+
+            # Optimization insights
+            st.subheader("💡 Optimization Insights")
+
+            # Identify hospitals with high cost per query
+            high_cost_threshold = cost_by_hospital['Cost per Query'].quantile(0.75)
+            high_cost_hospitals = cost_by_hospital[cost_by_hospital['Cost per Query'] > high_cost_threshold]
+
+            if not high_cost_hospitals.empty:
+                st.warning(f"⚠️ {len(high_cost_hospitals)} hospital(s) have above-average cost per query:")
+                for _, row in high_cost_hospitals.iterrows():
+                    st.write(f"- **{row['Hospital']}**: ${row['Cost per Query']:.4f} per query")
+
+            # Show calculation method if available
+            if 'calculation_method' in cost_df.columns:
+                methods = cost_df['calculation_method'].unique()
+                if len(methods) > 0:
+                    st.info(f"📋 Calculation Method(s): {', '.join([str(m) for m in methods if pd.notna(m)])}")
+
         else:
             st.warning("No cost attribution data available")
 
@@ -752,10 +899,8 @@ def page_data_lineage():
                 unsafe_allow_html=True)
     st.markdown("**Model Dependencies & Refresh Status**")
 
-    # dbt manifest data (would come from dbt artifacts in production)
     st.info("📌 This page would display dbt model lineage from manifest.json in production")
 
-    # Model refresh status
     query = """
     SELECT 
         table_schema,
@@ -770,72 +915,78 @@ def page_data_lineage():
     """
     tables_df = run_query(query)
 
-    if not tables_df.empty:
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric("Total Models", len(tables_df))
-
-        with col2:
-            stale = len(tables_df[tables_df['hours_since_refresh'] > 24])
-            st.metric("Stale Models (>24h)", stale,
-                      delta="🚨" if stale > 0 else "✅")
-
-        with col3:
-            total_rows = tables_df['row_count'].sum()
-            st.metric("Total Rows", f"{total_rows:,.0f}")
-
-        # Model refresh timeline
-        st.subheader("Model Refresh Status")
-
-        tables_df['size_mb'] = tables_df['bytes'] / (1024 * 1024)
-        tables_df['freshness_status'] = tables_df['hours_since_refresh'].apply(
-            lambda x: 'Fresh' if x < 6 else ('Warning' if x < 24 else 'Stale')
-        )
-
-        fig = px.scatter(
-            tables_df,
-            x='hours_since_refresh',
-            y='row_count',
-            size='size_mb',
-            color='freshness_status',
-            hover_data=['table_schema', 'table_name'],
-            title='Model Freshness vs Size',
-            color_discrete_map={
-                'Fresh': 'lightgreen',
-                'Warning': 'orange',
-                'Stale': 'red'
-            }
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Table details
-        st.subheader("Model Details")
-        display_df = tables_df[[
-            'table_schema', 'table_name', 'row_count',
-            'size_mb', 'hours_since_refresh', 'freshness_status'
-        ]].copy()
-
-        display_df.columns = [
-            'Schema', 'Model', 'Rows', 'Size (MB)',
-            'Hours Since Refresh', 'Status'
-        ]
-
-        st.dataframe(
-            display_df.style.format({
-                'Rows': '{:,.0f}',
-                'Size (MB)': '{:.2f}',
-                'Hours Since Refresh': '{:.1f}'
-            }).applymap(
-                lambda x: 'color: red' if x == 'Stale'
-                else ('color: orange' if x == 'Warning' else 'color: green'),
-                subset=['Status']
-            ),
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
+    if tables_df.empty:
         st.warning("No table information available")
+        return
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Total Models", len(tables_df))
+
+    with col2:
+        stale = len(tables_df[tables_df['hours_since_refresh'] > 24])
+        st.metric("Stale Models (>24h)", stale,
+                  delta="🚨" if stale > 0 else "✅")
+
+    with col3:
+        total_rows = tables_df['row_count'].sum()
+        st.metric("Total Rows", f"{total_rows:,.0f}")
+
+    st.subheader("Model Refresh Status")
+    tables_df['bytes'] = tables_df['bytes'].fillna(0)
+    tables_df['row_count'] = tables_df['row_count'].fillna(0)
+    tables_df['size_mb'] = tables_df['bytes'] / (1024 * 1024)
+    tables_df['size_mb'] = tables_df['size_mb'].fillna(1).clip(lower=1)
+    tables_df['hours_since_refresh'] = tables_df['hours_since_refresh'].fillna(0)
+
+    tables_df['freshness_status'] = tables_df['hours_since_refresh'].apply(
+        lambda x: 'Fresh' if x < 6 else ('Warning' if x < 24 else 'Stale')
+    )
+
+    fig = px.scatter(
+        tables_df,
+        x='hours_since_refresh',
+        y='row_count',
+        size='size_mb',
+        color='freshness_status',
+        hover_data=['table_schema', 'table_name'],
+        title='Model Freshness vs Size',
+        color_discrete_map={
+            'Fresh': 'lightgreen',
+            'Warning': 'orange',
+            'Stale': 'red'
+        }
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Model Details")
+
+    display_df = tables_df[[
+        'table_schema', 'table_name', 'row_count',
+        'size_mb', 'hours_since_refresh', 'freshness_status'
+    ]].copy()
+
+    display_df.columns = [
+        'Schema', 'Model', 'Rows', 'Size (MB)',
+        'Hours Since Refresh', 'Status'
+    ]
+
+    st.dataframe(
+        display_df.style.format({
+            'Rows': '{:,.0f}',
+            'Size (MB)': '{:.2f}',
+            'Hours Since Refresh': '{:.1f}'
+        }).applymap(
+            lambda x: 'color: red' if x == 'Stale'
+            else ('color: orange' if x == 'Warning' else 'color: green'),
+            subset=['Status']
+        ),
+        use_container_width=True,
+        hide_index=True
+    )
+
 
 
 def page_hospital_comparison():
