@@ -76,15 +76,16 @@ jobs:
         env:
           SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PASSWORD }}
 
+      - name: Install dbt packages
+        run: |
+          cd isometrics_healthcare
+          dbt deps
+
       - name: 🔒 Apply RLS policies
         run: |
           cd isometrics_healthcare
           dbt run-operation setup_rls_policies
 
-      - name: Install dbt packages
-        run: |
-          cd isometrics_healthcare
-          dbt deps
 
       - name: dbt compile
         run: |
