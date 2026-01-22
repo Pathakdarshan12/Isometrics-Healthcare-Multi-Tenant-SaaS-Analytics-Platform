@@ -82,7 +82,7 @@ jobs:
           ~/bin/snowsql -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
                   -u ${{ secrets.SNOWFLAKE_USER }} \
                   -o log_level=DEBUG \
-                  -f create_rls_policies_ci.sql
+                  -f scripts/create_rls_policies_ci.sql
         env:
           SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PASSWORD }}
 
