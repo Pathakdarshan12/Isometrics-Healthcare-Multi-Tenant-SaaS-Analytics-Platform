@@ -1,13 +1,12 @@
 {{
   config(
     materialized='view',
-    secure = True,
+    secure = true,
     tags=['staging', 'bronze', 'hospitals', 'tenants'],
     schema = 'staging',
     post_hook=["{{ apply_rls_policy() }}"],
     meta={
-      'contains_phi': false,
-      'owner': 'healthcare-data-team@company.com'
+      'contains_phi': false
     }
   )
 }}

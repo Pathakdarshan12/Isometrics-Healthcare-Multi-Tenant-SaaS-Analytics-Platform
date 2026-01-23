@@ -7,8 +7,7 @@
     cluster_by=['hospital_id', 'provider_id'],
     post_hook=["{{ apply_rls_policy() }}"],
     meta={
-      'contains_phi': false,
-      'owner': 'healthcare-data-team@company.com'
+      'contains_phi': false
     }
   )
 }}

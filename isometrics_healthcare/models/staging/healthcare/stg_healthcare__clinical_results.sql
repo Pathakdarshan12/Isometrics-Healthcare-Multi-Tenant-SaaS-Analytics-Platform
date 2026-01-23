@@ -1,11 +1,12 @@
 {{
   config(
     materialized='view',
+    secure = true,
+    post_hook=["{{ apply_rls_policy() }}"],
     tags=['staging', 'bronze', 'clinical', 'results'],
     meta={
       'contains_phi': true,
-      'phi_fields': ['result_datetime', 'collected_datetime', 'resulted_datetime'],
-      'owner': 'clinical-data-team@company.com'
+      'phi_fields': ['result_datetime', 'collected_datetime', 'resulted_datetime']
     }
   )
 }}

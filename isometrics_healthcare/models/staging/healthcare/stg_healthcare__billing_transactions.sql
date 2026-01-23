@@ -1,7 +1,7 @@
 {{
   config(
     materialized='view',
-    secure = True,
+    secure = true,
     tags=['staging', 'bronze', 'billing'],
     schema = 'staging',
     cluster_by=['hospital_id', 'transaction_date'],

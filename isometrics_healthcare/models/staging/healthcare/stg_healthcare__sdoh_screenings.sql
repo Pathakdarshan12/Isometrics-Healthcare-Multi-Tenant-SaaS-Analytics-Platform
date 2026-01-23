@@ -1,11 +1,12 @@
 {{
   config(
     materialized='view',
+    secure = true,
+    post_hook=["{{ apply_rls_policy() }}"],
     tags=['staging', 'bronze', 'clinical', 'sdoh', 'population_health'],
     meta={
       'contains_phi': true,
       'phi_fields': ['screening_date'],
-      'owner': 'population-health-team@company.com'
     }
   )
 }}

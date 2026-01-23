@@ -1,11 +1,12 @@
 {{
   config(
     materialized='view',
+    secure = true,
+    post_hook=["{{ apply_rls_policy() }}"],
     tags=['staging', 'bronze', 'financial', 'insurance'],
     meta={
       'contains_phi': true,
-      'phi_fields': ['policy_number', 'subscriber_id', 'subscriber_name'],
-      'owner': 'financial-analytics@company.com'
+      'phi_fields': ['policy_number', 'subscriber_id', 'subscriber_name']
     }
   )
 }}

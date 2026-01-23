@@ -1,11 +1,12 @@
 {{
   config(
     materialized='view',
+    secure = true,
+    post_hook=["{{ apply_rls_policy() }}"],
     tags=['staging', 'bronze', 'clinical', 'allergies'],
     meta={
       'contains_phi': true,
-      'phi_fields': ['onset_date', 'resolution_date'],
-      'owner': 'clinical-data-team@company.com'
+      'phi_fields': ['onset_date', 'resolution_date']
     }
   )
 }}

@@ -1,7 +1,7 @@
 {{
   config(
     materialized='view',
-    secure = True,
+    secure = true,
     tags=['staging', 'bronze', 'facilities'],
     schema = 'staging',
     cluster_by=['hospital_id', 'facility_id'],

@@ -8,8 +8,7 @@
     post_hook=["{{ apply_rls_policy() }}"],
     meta={
       'contains_phi': true,
-      'phi_fields': ['date_of_birth', 'zip_code'],
-      'owner': 'healthcare-data-team@company.com'
+      'phi_fields': ['date_of_birth', 'zip_code']
     }
   )
 }}
