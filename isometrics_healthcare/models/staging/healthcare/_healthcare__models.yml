@@ -451,3 +451,60 @@ models:
               arguments:
                 min_value: 0
                 max_value: 7
+
+  - name: stg_healthcare__care_plans
+    description: >
+      ⚠️ PHI WARNING: Nursing care plans and interventions.
+      Contains: Patient linkage, care plan dates
+    config:
+      meta:
+        contains_phi: true
+        phi_fields: [ 'start_date', 'target_date', 'completion_date' ]
+    columns:
+      - name: care_plan_id
+        tests: [ not_null, unique ]
+      - name: hospital_id
+        description: "🔒 CRITICAL for RLS"
+        tests: [ not_null ]
+
+  - name: stg_healthcare__prior_authorizations
+    description: >
+      Prior authorization tracking for services and medications.
+      Contains: Authorization numbers, clinical justification
+    config:
+      meta:
+        contains_phi: false
+    columns:
+      - name: auth_id
+        tests: [ not_null, unique ]
+      - name: hospital_id
+        description: "🔒 CRITICAL for RLS"
+        tests: [ not_null ]
+
+  - name: stg_healthcare__quality_measures
+    description: >
+      CMS Core Measures and quality metric tracking.
+      Contains: Measure performance, timing metrics
+    config:
+      meta:
+        contains_phi: false
+    columns:
+      - name: measure_id
+        tests: [ not_null, unique ]
+      - name: hospital_id
+        description: "🔒 CRITICAL for RLS"
+        tests: [ not_null ]
+
+  - name: stg_healthcare__referrals
+    description: >
+      Outpatient referrals and care coordination tracking.
+      Contains: Referral dates, provider information
+    config:
+      meta:
+        contains_phi: false
+    columns:
+      - name: referral_id
+        tests: [ not_null, unique ]
+      - name: hospital_id
+        description: "🔒 CRITICAL for RLS"
+        tests: [ not_null ]
