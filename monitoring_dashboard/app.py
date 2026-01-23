@@ -187,7 +187,7 @@ def load_hospitals():
         teaching_hospital
     FROM DBT_DEV_STAGING.STG_HEALTHCARE__HOSPITALS
     WHERE is_active = TRUE
-    ORDER BY hospital_name
+    ORDER BY hospital_id
     """
     return run_query(query)
 
@@ -351,11 +351,24 @@ def main():
     hospitals_df.columns = hospitals_df.columns.str.lower()
 
     if not hospitals_df.empty:
-        hospital_options = ['All Hospitals'] + sorted(
-            hospitals_df['hospital_id']
-            .astype(str)
+        hospital_ids = (
+            hospitals_df["hospital_id"]
+            .dropna()
             .unique()
             .tolist()
+        )
+
+        # numeric sort when possible, otherwise fallback to string sort
+        def sort_key(x):
+            s = str(x).strip()
+            try:
+                return (0, int(s))  # numeric first
+            except:
+                return (1, s)  # then alphanumeric
+
+        hospital_options = ["All Hospitals"] + sorted(
+            [str(h).strip() for h in hospital_ids],
+            key=sort_key
         )
 
         selected_hospital = st.sidebar.selectbox(
@@ -363,7 +376,7 @@ def main():
             hospital_options
         )
     else:
-        selected_hospital = 'All Hospitals'
+        selected_hospital = "All Hospitals"
 
     # Date range filter
     date_range = st.sidebar.slider(
@@ -1051,8 +1064,11 @@ def page_hipaa_audit():
 
 def page_data_lineage():
     """Data Lineage & Dependencies page"""
-    st.markdown('<div class="main-header">🔄 Data Lineage</div>',
-                unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="main-header">🔄 Data Lineage</div>',
+        unsafe_allow_html=True
+    )
     st.markdown("**Model Dependencies & Refresh Status**")
 
     st.info("📌 This page would display dbt model lineage from manifest.json in production")
@@ -1069,78 +1085,120 @@ def page_data_lineage():
     WHERE table_schema IN ('DBT_DEV_STAGING', 'DBT_DEV_INTERMEDIATE', 'DBT_DEV_MARTS')
     ORDER BY last_altered DESC
     """
-    tables_df = run_query(query)
 
-    if tables_df.empty:
+
+    tables_df = run_query(query)
+    NON_STALE_SCHEMAS = {"DBT_DEV_INTERMEDIATE"}
+
+    if tables_df is None or tables_df.empty:
         st.warning("No table information available")
         return
 
+    # ---------- Cleanup / defaults ----------
+    tables_df["bytes"] = tables_df["bytes"].fillna(0)
+    tables_df["row_count"] = tables_df["row_count"].fillna(0)
+    tables_df["hours_since_refresh"] = tables_df["hours_since_refresh"].fillna(0)
+    tables_df["size_mb"] = (tables_df["bytes"] / (1024 * 1024)).fillna(1).clip(lower=1)
+
+    # ---------- Freshness status rules ----------
+    def get_status(row):
+        # Intermediate should not be treated as stale (ephemeral/transient)
+        if row["table_schema"] in NON_STALE_SCHEMAS:
+            return "Ephemeral"
+        # Normal freshness logic for staging/marts
+        if row["hours_since_refresh"] < 6:
+            return "Fresh"
+        if row["hours_since_refresh"] < 24:
+            return "Warning"
+        return "Stale"
+
+    tables_df["freshness_status"] = tables_df.apply(get_status, axis=1)
+
+    # ---------- Metrics ----------
     col1, col2, col3 = st.columns(3)
 
     with col1:
         st.metric("Total Models", len(tables_df))
 
     with col2:
-        stale = len(tables_df[tables_df['hours_since_refresh'] > 24])
-        st.metric("Stale Models (>24h)", stale,
-                  delta="🚨" if stale > 0 else "✅")
+        # stale count ignores NON_STALE_SCHEMAS
+        stale = len(
+            tables_df[
+                (tables_df["hours_since_refresh"] > 24)
+                & (~tables_df["table_schema"].isin(NON_STALE_SCHEMAS))
+            ]
+        )
+        st.metric("Stale Models (>24h)", stale, delta="🚨" if stale > 0 else "✅")
 
     with col3:
-        total_rows = tables_df['row_count'].sum()
+        total_rows = tables_df["row_count"].sum()
         st.metric("Total Rows", f"{total_rows:,.0f}")
 
+    # ---------- Chart ----------
     st.subheader("Model Refresh Status")
-    tables_df['bytes'] = tables_df['bytes'].fillna(0)
-    tables_df['row_count'] = tables_df['row_count'].fillna(0)
-    tables_df['size_mb'] = tables_df['bytes'] / (1024 * 1024)
-    tables_df['size_mb'] = tables_df['size_mb'].fillna(1).clip(lower=1)
-    tables_df['hours_since_refresh'] = tables_df['hours_since_refresh'].fillna(0)
-
-    tables_df['freshness_status'] = tables_df['hours_since_refresh'].apply(
-        lambda x: 'Fresh' if x < 6 else ('Warning' if x < 24 else 'Stale')
-    )
 
     fig = px.scatter(
         tables_df,
-        x='hours_since_refresh',
-        y='row_count',
-        size='size_mb',
-        color='freshness_status',
-        hover_data=['table_schema', 'table_name'],
-        title='Model Freshness vs Size',
+        x="hours_since_refresh",
+        y="row_count",
+        size="size_mb",
+        color="freshness_status",
+        hover_data=["table_schema", "table_name"],
+        title="Model Freshness vs Size",
         color_discrete_map={
-            'Fresh': 'lightgreen',
-            'Warning': 'orange',
-            'Stale': 'red'
-        }
+            "Fresh": "lightgreen",
+            "Warning": "orange",
+            "Stale": "red",
+            "Ephemeral": "lightskyblue",
+        },
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
+    # ---------- Table ----------
     st.subheader("Model Details")
 
-    display_df = tables_df[[
-        'table_schema', 'table_name', 'row_count',
-        'size_mb', 'hours_since_refresh', 'freshness_status'
-    ]].copy()
+    display_df = tables_df[
+        [
+            "table_schema",
+            "table_name",
+            "row_count",
+            "size_mb",
+            "hours_since_refresh",
+            "freshness_status",
+        ]
+    ].copy()
 
     display_df.columns = [
-        'Schema', 'Model', 'Rows', 'Size (MB)',
-        'Hours Since Refresh', 'Status'
+        "Schema",
+        "Model",
+        "Rows",
+        "Size (MB)",
+        "Hours Since Refresh",
+        "Status",
     ]
 
+    def style_status(val):
+        if val == "Stale":
+            return "color: red"
+        if val == "Warning":
+            return "color: orange"
+        if val == "Fresh":
+            return "color: green"
+        if val == "Ephemeral":
+            return "color: dodgerblue"
+        return ""
+
     st.dataframe(
-        display_df.style.format({
-            'Rows': '{:,.0f}',
-            'Size (MB)': '{:.2f}',
-            'Hours Since Refresh': '{:.1f}'
-        }).applymap(
-            lambda x: 'color: red' if x == 'Stale'
-            else ('color: orange' if x == 'Warning' else 'color: green'),
-            subset=['Status']
-        ),
+        display_df.style.format(
+            {
+                "Rows": "{:,.0f}",
+                "Size (MB)": "{:.2f}",
+                "Hours Since Refresh": "{:.1f}",
+            }
+        ).applymap(style_status, subset=["Status"]),
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
     )
 
 def page_hospital_comparison():
