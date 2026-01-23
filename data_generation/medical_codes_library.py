@@ -14,7 +14,7 @@ HOSPITAL_DISTRIBUTION = {
         'emr_system': 'Epic'
     },
     'community_hospital': {
-        'count': 60,
+        'count': 25,
         'bed_count': (100, 400),
         'daily_encounters': (50, 150),
         'patients': (5000, 20000),
@@ -24,7 +24,7 @@ HOSPITAL_DISTRIBUTION = {
         'emr_system': ['Epic', 'Cerner']
     },
     'rural_hospital': {
-        'count': 30,
+        'count': 15,
         'bed_count': (25, 100),
         'daily_encounters': (10, 40),
         'patients': (1000, 5000),

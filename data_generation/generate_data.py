@@ -44,7 +44,7 @@ class HealthcareDataGenerator:
         self.patient_encounters = {}
 
         print("=" * 70)
-        print("IsoMetrics Healthcare Data Generator - COMPLETE VERSION")
+        print("IsoMetrics Healthcare Data Generator")
         print("=" * 70)
         print(f"Date Range: {start_date} to {end_date}")
         print(f"Total Days: {self.days}")
@@ -940,23 +940,23 @@ class HealthcareDataGenerator:
         print(f"✓ Generated {len(df):,} billing transactions")
         return df
 
-        @staticmethod
-        def save_to_csv(df: pd.DataFrame, filename: str, output_dir: str = 'data_generation/2025'):
-            """Save DataFrame to CSV"""
-            os.makedirs(output_dir, exist_ok=True)
-            filepath = os.path.join(output_dir, filename)
+    @staticmethod
+    def save_to_csv(df: pd.DataFrame, filename: str, output_dir: str = 'data_generation/2025'):
+        """Save DataFrame to CSV"""
+        os.makedirs(output_dir, exist_ok=True)
+        filepath = os.path.join(output_dir, filename)
 
-            print(f"  Saving {filename}...", end=" ")
-            df.to_csv(filepath, index=False)
+        print(f"  Saving {filename}...", end=" ")
+        df.to_csv(filepath, index=False)
 
-            size_mb = os.path.getsize(filepath) / (1024 * 1024)
-            print(f"✓ ({len(df):,} rows, {size_mb:.2f} MB)")
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)
+        print(f"✓ ({len(df):,} rows, {size_mb:.2f} MB)")
 
     # Add the main() function with all data generation steps
 def main():
     generator = HealthcareDataGenerator(
         start_date='2025-01-01',
-        end_date='2025-01-31'
+        end_date='2025-01-02'
     )
 
     # Generate master data

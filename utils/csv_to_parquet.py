@@ -7,7 +7,14 @@ def csv_to_parquet():
     chunk_size = 100_000
     BASE_DIR = Path(__file__).resolve().parent.parent
 
-    csv_file_names = ['billing_transactions.csv', 'diagnoses.csv', 'encounters.csv', 'facilities.csv', 'hospitals.csv', 'patients.csv', 'payers.csv', 'procedures.csv', 'providers.csv']
+    csv_file_names = ['billing_transactions.csv', 'clinical_orders.csv',
+                      'clinical_results.csv', 'diagnoses.csv',
+                      'encounters.csv', 'facilities.csv',
+                      'hospitals.csv', 'patients.csv',
+                      'patient_allergies.csv', 'patient_coverage.csv',
+                      'payers.csv', 'problem_list.csv',
+                      'procedures.csv', 'providers.csv',
+                      'sdoh_screenings.csv', 'vital_signs.csv']
     for csv_file_name in csv_file_names:
         csv_path = BASE_DIR / "data_generation" / "2025"/ csv_file_name
         parquet_dir = BASE_DIR / "data_generation" / "parquet"
