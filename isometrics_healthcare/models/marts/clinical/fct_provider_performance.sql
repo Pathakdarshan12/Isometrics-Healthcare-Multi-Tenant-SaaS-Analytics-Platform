@@ -8,7 +8,6 @@
 
 with patient_journey as (
     select * from {{ ref('int_patient__journey') }}
-    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
 
 base_metrics as (

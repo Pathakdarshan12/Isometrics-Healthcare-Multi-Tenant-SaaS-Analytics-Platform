@@ -30,7 +30,6 @@ with_readmission_windows as (
         e.*,
 
         -- Patient history metrics
-        ph.hospital_id as hospital_id,
         ph.total_encounters as patient_total_encounters,
         ph.inpatient_count as patient_inpatient_count,
         ph.emergency_count as patient_emergency_count,
