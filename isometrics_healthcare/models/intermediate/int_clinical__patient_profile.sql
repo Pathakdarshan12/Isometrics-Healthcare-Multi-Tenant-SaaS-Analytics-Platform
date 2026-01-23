@@ -1,7 +1,7 @@
 {{
   config(
-    materialized='view',
-    tags=['intermediate', 'silver', 'clinical', 'patient_profile']
+    materialized='ephemeral',
+    tags=['intermediate', 'silver', 'clinical', 'medications', 'safety']
   )
 }}
 

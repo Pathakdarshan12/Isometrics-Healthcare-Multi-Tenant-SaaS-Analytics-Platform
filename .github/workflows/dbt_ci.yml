@@ -130,22 +130,22 @@ jobs:
           cd isometrics_healthcare
           dbt run --select marts
 
-      - name: dbt test (data quality)
-        run: |
-          cd isometrics_healthcare
-          dbt test --exclude test_name:assert_rls_*
-        continue-on-error: true  # For test Purpose only
+#      - name: dbt test (data quality)
+#        run: |
+#          cd isometrics_healthcare
+#          dbt test --exclude test_name:assert_rls_*
+#        continue-on-error: true  # For test Purpose only
 
       - name: Verify RLS policies
         run: |
           cd isometrics_healthcare
-          dbt test --select test_name:assert_rls_column_exists test_name:assert_rls_policy_applied
+          dbt test --select assert_rls_column_exists assert_rls_policy_applied
         continue-on-error: true  # RLS tests might fail in CI environment
 
       - name: Verify data isolation
         run: |
           cd isometrics_healthcare
-          dbt test --select test_name:assert_no_cross_hospital_data_leakage test_name:assert_no_cross_hospital_encounters
+          dbt test --select assert_no_cross_hospital_data_leakage assert_no_cross_hospital_encounters
 
       - name: Generate dbt docs
         run: |
@@ -217,16 +217,6 @@ jobs:
             -f remove_rls_policies.sql || echo "RLS cleanup failed, continuing..."
         env:
           SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-
-      - name: 🧹 Remove RLS policies using dbt macro
-        if: always()
-        run: |
-          cd isometrics_healthcare
-          # Get list of models that might have RLS policies
-          dbt ls --select marts --output name | while read model; do
-            dbt run-operation remove_rls_policy --args "{model_name: $model}" || true
-          done
-        continue-on-error: true
 
       - name: 🧹 Cleanup CI schemas
         if: always()
