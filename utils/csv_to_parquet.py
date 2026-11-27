@@ -14,7 +14,9 @@ def csv_to_parquet():
                       'patient_allergies.csv', 'patient_coverage.csv',
                       'payers.csv', 'problem_list.csv',
                       'procedures.csv', 'providers.csv',
-                      'sdoh_screenings.csv', 'vital_signs.csv']
+                      'sdoh_screenings.csv', 'vital_signs.csv',
+                      'quality_measures.csv', 'care_plans.csv',
+                      'referrals.csv', 'prior_authorizations.csv']
     for csv_file_name in csv_file_names:
         csv_path = BASE_DIR / "data_generation" / "2025"/ csv_file_name
         parquet_dir = BASE_DIR / "data_generation" / "parquet"

@@ -28,3 +28,46 @@ models:
                 max_value: 150   # Can exceed 100% with hallway beds
               config:
                 severity: warn
+
+  - name: fct_care_coordination_metrics
+    description: >
+      Monthly care coordination KPIs per hospital: referral volume, completion,
+      closed-loop and scheduling-SLA rates, and care plan management (active,
+      overdue for evaluation, goal completion).
+    config:
+      meta:
+        owner: "operations-analytics@company.com"
+        contains_phi: false
+    tests:
+      - has_tenant_column
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['hospital_id', 'metric_month']
+    columns:
+      - name: care_coordination_key
+        tests:
+          - not_null
+          - unique
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: metric_month
+        tests:
+          - not_null
+      - name: referral_completion_rate_pct
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+              config:
+                where: "referral_completion_rate_pct is not null"
+      - name: scheduled_within_sla_pct
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+              config:
+                where: "scheduled_within_sla_pct is not null"

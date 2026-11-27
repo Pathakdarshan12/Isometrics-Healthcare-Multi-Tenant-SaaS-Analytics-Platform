@@ -7,7 +7,7 @@
     has_vascular_disease=false,
     has_diabetes=false
 ) %}
-/*
+{#
   CHA2DS2-VASc Score for Atrial Fibrillation Stroke Risk
 
   Used to determine anticoagulation need in atrial fibrillation patients.
@@ -38,7 +38,7 @@
         has_vascular_disease='has_vascular_disease',
         has_diabetes='has_diabetes'
     ) }} as cha2ds2_vasc_score
-*/
+#}
 
 (
   -- Congestive Heart Failure (1 point)
@@ -78,12 +78,12 @@
 
 
 {% macro cha2ds2_vasc_risk_category(score_column) %}
-/*
+{#
   Categorize CHA2DS2-VASc score into risk levels
 
   Usage:
     {{ cha2ds2_vasc_risk_category('cha2ds2_vasc_score') }} as stroke_risk_category
-*/
+#}
 
 case
   when {{ score_column }} = 0 then 'Low Risk (No anticoagulation)'
@@ -96,12 +96,12 @@ end
 
 
 {% macro cha2ds2_vasc_annual_stroke_risk(score_column) %}
-/*
+{#
   Convert CHA2DS2-VASc score to estimated annual stroke risk percentage
 
   Usage:
     {{ cha2ds2_vasc_annual_stroke_risk('cha2ds2_vasc_score') }} as annual_stroke_risk_pct
-*/
+#}
 
 case
   when {{ score_column }} = 0 then 0.0

@@ -940,6 +940,297 @@ class HealthcareDataGenerator:
         print(f"✓ Generated {len(df):,} billing transactions")
         return df
 
+    # ------------------------------------------------------------------
+    # Care coordination & quality tables
+    # (raw_quality_measures, raw_care_plans, raw_referrals, raw_prior_authorizations)
+    # ------------------------------------------------------------------
+
+    # Diagnosis-driven CMS measure cohorts:
+    # code -> (measure_code, measure_name, category, timing field, target minutes)
+    QUALITY_MEASURE_COHORTS = {
+        'A41.9': ('SEP-1', 'Severe Sepsis and Septic Shock Management Bundle', 'SEPSIS',
+                  'door_to_antibiotic_minutes', 60),
+        'I21.9': ('AMI-8a', 'Primary PCI Received Within 90 Minutes of Arrival', 'AMI',
+                  'door_to_balloon_minutes', 90),
+        'I63.9': ('STK-4', 'Thrombolytic Therapy Within 60 Minutes of Arrival', 'STROKE',
+                  'door_to_needle_minutes', 60),
+        'I50.9': ('HF-2', 'Evaluation of LVS Function', 'HF', None, None),
+        'J18.9': ('PN-6', 'Initial Antibiotic Selection for CAP', 'PNEUMONIA', None, None),
+    }
+
+    CARE_PLAN_TEMPLATES = {
+        'Cardiovascular': ('Cardiac risk management', 'Maintain BP < 130/80 and LDL at goal',
+                           'Medication titration, low-sodium diet education, cardiology follow-up'),
+        'Endocrine': ('Glycemic control', 'HbA1c < 7.0% within 90 days',
+                      'Insulin/oral agent adjustment, diabetes self-management education'),
+        'Respiratory': ('Respiratory function optimization', 'No exacerbation-related ED visits in 90 days',
+                        'Inhaler technique teaching, pulmonary rehab referral, smoking cessation'),
+        'Renal': ('CKD progression management', 'Stable eGFR over 6 months',
+                  'Nephrology follow-up, renal diet, nephrotoxic medication review'),
+        'Infectious': ('Infection resolution', 'Afebrile with normal WBC before discharge',
+                       'Culture-guided antibiotics, sepsis bundle compliance, line care'),
+    }
+
+    REFERRAL_SPECIALTIES = {
+        'Cardiovascular': 'Cardiology', 'Endocrine': 'Endocrinology', 'Respiratory': 'Pulmonology',
+        'Renal': 'Nephrology', 'Neurological': 'Neurology', 'Infectious': 'Infectious Disease',
+        'Oncology': 'Oncology', 'Musculoskeletal': 'Orthopedics', 'Mental Health': 'Psychiatry',
+    }
+
+    def generate_quality_measures(self, encounters_df):
+        """Generate CMS core measure records for inpatient/ED encounters in a measure cohort"""
+        print("\n📏 Generating quality measures...")
+        measures = []
+        measure_id = 1
+
+        cohort = encounters_df[
+            encounters_df['encounter_type'].isin(['Inpatient', 'Emergency'])
+            & encounters_df['primary_diagnosis_code'].isin(list(self.QUALITY_MEASURE_COHORTS.keys()))
+        ]
+
+        for enc in tqdm(cohort.itertuples(index=False), total=len(cohort), desc="Encounters"):
+            code, name, category, timing_field, target = self.QUALITY_MEASURE_COHORTS[enc.primary_diagnosis_code]
+            admission = pd.Timestamp(enc.admission_date)
+
+            # ~8% of the cohort is excluded (comfort care, transfer in, refused treatment)
+            excluded = random.random() < 0.08
+            timing = {'door_to_antibiotic_minutes': None,
+                      'door_to_balloon_minutes': None,
+                      'door_to_needle_minutes': None}
+            if timing_field:
+                # log-normal around the target: most cases meet it, with a long tail that misses
+                minutes = int(max(5, np.random.lognormal(np.log(target * 0.75), 0.45)))
+                timing[timing_field] = minutes
+                met = minutes <= target
+                component_value = str(minutes)
+                component_ts = admission + timedelta(minutes=minutes)
+            else:
+                met = random.random() < 0.88
+                component_value = 'Y' if met else 'N'
+                component_ts = admission + timedelta(hours=random.randint(1, 24))
+
+            compliant = (not excluded) and met
+
+            measures.append({
+                'measure_id': f'QM_{measure_id:012d}',
+                'hospital_id': enc.hospital_id,
+                'encounter_id': enc.encounter_id,
+                'patient_id': enc.patient_id,
+                'measure_code': code,
+                'measure_name': name,
+                'measure_category': category,
+                'numerator_eligible': compliant,
+                'denominator_eligible': True,
+                'exclusion_applied': excluded,
+                'exclusion_reason': random.choice([
+                    'Comfort measures only',
+                    'Transfer from another acute facility',
+                    'Patient refused treatment',
+                ]) if excluded else None,
+                **timing,
+                'metric_component': timing_field or 'process_documented',
+                'component_value': component_value,
+                'component_timestamp': component_ts,
+                'compliance_flag': compliant,
+                'reporting_quarter': f"{admission.year}Q{(admission.month - 1) // 3 + 1}",
+                'reporting_year': admission.year,
+                '_loaded_at': datetime.now()
+            })
+            measure_id += 1
+
+        df = pd.DataFrame(measures)
+        print(f"✓ Generated {len(df):,} quality measures")
+        return df
+
+    def generate_care_plans(self, encounters_df):
+        """Generate multidisciplinary care plans for inpatient stays"""
+        print("\n🗂️ Generating care plans...")
+        plans = []
+        plan_id = 1
+        today = pd.Timestamp(datetime.now().date())
+
+        inpatient = encounters_df[encounters_df['encounter_type'] == 'Inpatient']
+
+        for enc in tqdm(inpatient.itertuples(index=False), total=len(inpatient), desc="Encounters"):
+            if random.random() > 0.70:
+                continue
+
+            category = ICD10_CODES.get(enc.primary_diagnosis_code, {}).get('category', 'Other')
+            problem, goal, intervention = self.CARE_PLAN_TEMPLATES.get(
+                category,
+                ('General recovery', 'Return to baseline functional status',
+                 'Early mobilization, fall precautions, discharge planning'))
+
+            start = pd.Timestamp(enc.admission_date).normalize()
+            target = start + timedelta(days=random.choice([14, 30, 60, 90]))
+            status = random.choices(['ACTIVE', 'COMPLETED', 'DISCONTINUED'], weights=[0.45, 0.45, 0.10])[0]
+            completion = None
+            if status == 'COMPLETED':
+                completion = min(max(target + timedelta(days=random.randint(-10, 10)), start), today)
+
+            # most active plans were evaluated recently; ~10% are overdue (> 90 days)
+            days_ago = random.choices(
+                [random.randint(0, 30), random.randint(31, 90), random.randint(91, 180)],
+                weights=[0.6, 0.3, 0.1])[0]
+            last_eval = max(today - timedelta(days=days_ago), start)
+
+            hosp_providers = self.hospital_providers[enc.hospital_id]
+            team = random.sample(hosp_providers, k=min(3, len(hosp_providers)))
+
+            plans.append({
+                'care_plan_id': f'CP_{plan_id:012d}',
+                'hospital_id': enc.hospital_id,
+                'encounter_id': enc.encounter_id,
+                'patient_id': enc.patient_id,
+                'problem_description': problem,
+                'goal_description': goal,
+                'intervention_description': intervention,
+                'plan_status': status,
+                'start_date': start.date(),
+                'target_date': target.date(),
+                'completion_date': completion.date() if completion is not None else None,
+                'created_by_provider_id': enc.provider_id,
+                'assigned_to_provider_ids': ','.join(team),
+                'progress_notes': random.choice([
+                    'Progressing toward goal', 'Goal met',
+                    'Slow progress, plan revised', 'No change since last evaluation',
+                ]),
+                'last_evaluated_date': last_eval.date(),
+                '_loaded_at': datetime.now()
+            })
+            plan_id += 1
+
+        df = pd.DataFrame(plans)
+        print(f"✓ Generated {len(df):,} care plans")
+        return df
+
+    def generate_referrals(self, encounters_df):
+        """Generate post-discharge referrals (specialist, home health, SNF, DME)"""
+        print("\n📨 Generating referrals...")
+        referrals = []
+        referral_id = 1
+        today = pd.Timestamp(datetime.now().date())
+        referral_probability = {'Inpatient': 0.45, 'Emergency': 0.15, 'Outpatient': 0.10}
+        wait_days_by_urgency = {'ROUTINE': (7, 45), 'URGENT': (1, 10), 'EMERGENT': (0, 2)}
+        facility_suffix = {'HOME_HEALTH': ' Home Health', 'SNF': ' Skilled Nursing', 'DME': ' Medical Supply'}
+
+        eligible = encounters_df[encounters_df['encounter_type'].isin(list(referral_probability.keys()))]
+
+        for enc in tqdm(eligible.itertuples(index=False), total=len(eligible), desc="Encounters"):
+            if random.random() > referral_probability[enc.encounter_type]:
+                continue
+
+            diagnosis = ICD10_CODES.get(enc.primary_diagnosis_code, {})
+            category = diagnosis.get('category', 'Other')
+            ref_type = random.choices(['SPECIALIST', 'HOME_HEALTH', 'SNF', 'DME'],
+                                      weights=[0.65, 0.15, 0.10, 0.10])[0]
+            urgency = random.choices(['ROUTINE', 'URGENT', 'EMERGENT'], weights=[0.70, 0.25, 0.05])[0]
+            referral_date = pd.Timestamp(enc.discharge_date).normalize()
+
+            status = random.choices(['PENDING', 'SCHEDULED', 'COMPLETED', 'CANCELLED'],
+                                    weights=[0.15, 0.20, 0.55, 0.10])[0]
+            appointment = None
+            if status in ('SCHEDULED', 'COMPLETED'):
+                appointment = referral_date + timedelta(days=random.randint(*wait_days_by_urgency[urgency]))
+            completion = None
+            if status == 'COMPLETED':
+                if appointment <= today:
+                    completion = appointment
+                else:
+                    status = 'SCHEDULED'  # can't be completed in the future
+
+            follow_up_required = random.random() < 0.40
+            is_specialist = ref_type == 'SPECIALIST'
+
+            referrals.append({
+                'referral_id': f'REF_{referral_id:012d}',
+                'hospital_id': enc.hospital_id,
+                'patient_id': enc.patient_id,
+                'encounter_id': enc.encounter_id,
+                'referral_type': ref_type,
+                'referring_provider_id': enc.provider_id,
+                'referred_to_provider_id': random.choice(self.hospital_providers[enc.hospital_id])
+                if is_specialist else None,
+                'referred_to_facility': None if is_specialist else fake.company() + facility_suffix[ref_type],
+                'specialty': self.REFERRAL_SPECIALTIES.get(category, 'Internal Medicine') if is_specialist else None,
+                'referral_status': status,
+                'referral_date': referral_date.date(),
+                'appointment_date': appointment.date() if appointment is not None else None,
+                'completion_date': completion.date() if completion is not None else None,
+                'reason_for_referral': f"Follow-up for {diagnosis.get('description', 'condition').lower()}",
+                'diagnosis_codes': enc.primary_diagnosis_code,
+                'urgency': urgency,
+                'follow_up_required': follow_up_required,
+                'follow_up_completed': follow_up_required and status == 'COMPLETED' and random.random() < 0.75,
+                '_loaded_at': datetime.now()
+            })
+            referral_id += 1
+
+        df = pd.DataFrame(referrals)
+        print(f"✓ Generated {len(df):,} referrals")
+        return df
+
+    def generate_prior_authorizations(self, encounters_df, billing_df):
+        """Generate payer prior authorizations for planned inpatient/outpatient services"""
+        print("\n📋 Generating prior authorizations...")
+        auths = []
+        auth_id = 1
+
+        # Payer per encounter comes from billing, so authorizations line up with claims
+        encounter_payer = billing_df.drop_duplicates('encounter_id').set_index('encounter_id')['payer_id']
+        cpt_codes = [(code, info['description']) for code, info in CPT_CODES.items()
+                     if info.get('category') != 'Emergency']
+
+        planned = encounters_df[encounters_df['encounter_type'].isin(['Inpatient', 'Outpatient'])]
+
+        for enc in tqdm(planned.itertuples(index=False), total=len(planned), desc="Encounters"):
+            if enc.encounter_id not in encounter_payer.index or random.random() > 0.30:
+                continue
+
+            service_code, service_description = random.choice(cpt_codes)
+            request_date = pd.Timestamp(enc.admission_date).normalize() - timedelta(days=random.randint(3, 21))
+            status = random.choices(['APPROVED', 'DENIED', 'PENDING', 'EXPIRED'],
+                                    weights=[0.75, 0.12, 0.08, 0.05])[0]
+
+            decision_date = None if status == 'PENDING' else request_date + timedelta(days=random.randint(1, 14))
+            effective = decision_date if status in ('APPROVED', 'EXPIRED') else None
+            # auth_status is the payer decision; staging derives is_expired from the dates
+            expiration = None
+            if effective is not None:
+                expiration = effective + timedelta(days=random.choice([30, 60, 90, 180]))
+
+            units_authorized = random.choice([1, 1, 1, 6, 12, 24]) if effective is not None else None
+            units_used = random.randint(0, units_authorized) if units_authorized else None
+
+            auths.append({
+                'auth_id': f'AUTH_{auth_id:012d}',
+                'hospital_id': enc.hospital_id,
+                'patient_id': enc.patient_id,
+                'payer_id': encounter_payer[enc.encounter_id],
+                'encounter_id': enc.encounter_id,
+                'auth_number': f'PA{random.randint(10_000_000, 99_999_999)}',
+                'auth_type': random.choices(['SERVICE', 'MEDICATION', 'DME'], weights=[0.75, 0.15, 0.10])[0],
+                'service_code': service_code,
+                'service_description': service_description,
+                'auth_status': status,
+                'request_date': request_date.date(),
+                'decision_date': decision_date.date() if decision_date is not None else None,
+                'effective_date': effective.date() if effective is not None else None,
+                'expiration_date': expiration.date() if expiration is not None else None,
+                'units_authorized': units_authorized,
+                'units_used': units_used,
+                'units_remaining': units_authorized - units_used if units_authorized else None,
+                'diagnosis_codes': enc.primary_diagnosis_code,
+                'clinical_notes': 'Medical necessity documented per payer criteria',
+                'denial_reason': random.choice(DENIAL_REASONS) if status == 'DENIED' else None,
+                '_loaded_at': datetime.now()
+            })
+            auth_id += 1
+
+        df = pd.DataFrame(auths)
+        print(f"✓ Generated {len(df):,} prior authorizations")
+        return df
+
     @staticmethod
     def save_to_csv(df: pd.DataFrame, filename: str, output_dir: str = 'data_generation/2025'):
         """Save DataFrame to CSV"""
@@ -1017,6 +1308,19 @@ def main():
     sdoh = generator.generate_sdoh_screenings(patients)
     generator.save_to_csv(sdoh, 'sdoh_screenings.csv')
 
+    # Care coordination & quality
+    quality_measures = generator.generate_quality_measures(encounters)
+    generator.save_to_csv(quality_measures, 'quality_measures.csv')
+
+    care_plans = generator.generate_care_plans(encounters)
+    generator.save_to_csv(care_plans, 'care_plans.csv')
+
+    referrals = generator.generate_referrals(encounters)
+    generator.save_to_csv(referrals, 'referrals.csv')
+
+    prior_auths = generator.generate_prior_authorizations(encounters, billing)
+    generator.save_to_csv(prior_auths, 'prior_authorizations.csv')
+
     print("\n" + "=" * 70)
     print("✓ GENERATION COMPLETE - ALL FILES!")
     print("=" * 70)
@@ -1034,6 +1338,10 @@ def main():
     print(f"Problem List:           {len(problems):,}")
     print(f"Patient Coverage:       {len(coverage):,}")
     print(f"SDOH Screenings:        {len(sdoh):,}")
+    print(f"Quality Measures:       {len(quality_measures):,}")
+    print(f"Care Plans:             {len(care_plans):,}")
+    print(f"Referrals:              {len(referrals):,}")
+    print(f"Prior Authorizations:   {len(prior_auths):,}")
     print("\n⚠️  All PHI is synthetic - HIPAA-safe for demonstration")
     print("=" * 70)
 

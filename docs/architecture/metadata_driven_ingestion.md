@@ -1,142 +1,93 @@
-# Metadata-Driven Ingestion Configuration
+# Ingestion: Stage → RAW_PHI
 
-## Architecture
-Ingestion controlled via `config.metadata_registry` table, eliminating hard-coded table/column mappings.
+Synthetic data goes through generate → CSV → Parquet → Snowflake stage → `RAW_PHI`
+raw tables. There are two ways to do the last step:
 
-## Metadata Registry Schema
-```sql
-CREATE TABLE config.metadata_registry (
-  source_system VARCHAR(50),
-  source_table VARCHAR(100),
-  source_column VARCHAR(100),
-  target_schema VARCHAR(50),
-  target_table VARCHAR(100),
-  target_column VARCHAR(100),
-  data_type VARCHAR(50),
-  transformation_rule TEXT,
-  is_active BOOLEAN DEFAULT true,
-  PRIMARY KEY (source_system, source_table, source_column)
-);
-```
+| Path | File | Covers | Use for |
+|---|---|---|---|
+| Explicit `COPY INTO` | `scripts/load_data_to_snowflake.sql` | all 21 raw tables | Quick start, full loads |
+| Metadata-driven procedures | `scripts/metadata_driven_stage_to_raw.sql` | 9 sources configured (hospitals, patients, providers, facilities, diagnoses, procedures, payers, encounters, billing) | Config-driven batch/incremental loads with run logging |
 
-## Configuration Process
+## End-to-end (from the repo root)
 
-### 1. Register Source System
-```sql
-INSERT INTO config.metadata_registry VALUES
-  ('epic', 'PAT', 'PAT_ID', 'raw', 'patients', 'patient_id', 'VARCHAR(50)', NULL, true),
-  ('epic', 'PAT', 'PAT_NAME', 'raw', 'patients', 'patient_name', 'VARCHAR(200)', 'UPPER(source_value)', true),
-  ('epic', 'ENCOUNTERS', 'ENC_DATE', 'raw', 'encounters', 'encounter_datetime', 'TIMESTAMP', 'TO_TIMESTAMP(source_value, ''YYYY-MM-DD HH24:MI:SS'')', true);
-```
-
-### 2. Define Transformation Rules
-Supported transformations in `transformation_rule` column:
-- **Direct mapping**: `NULL` (1:1 copy)
-- **Type casting**: `CAST(source_value AS INTEGER)`
-- **Date parsing**: `TO_DATE(source_value, 'MM/DD/YYYY')`
-- **String manipulation**: `TRIM(UPPER(source_value))`
-- **Conditional logic**: `CASE WHEN source_value = 'Y' THEN true ELSE false END`
-- **Lookups**: `(SELECT code FROM ref.icd10_map WHERE legacy_code = source_value)`
-
-### 3. Ingestion Execution
-Python orchestrator reads metadata and generates dynamic SQL:
-```python
-def build_ingestion_sql(source_system, source_table):
-    metadata = query(f"""
-        SELECT source_column, target_column, transformation_rule
-        FROM config.metadata_registry
-        WHERE source_system = '{source_system}'
-          AND source_table = '{source_table}'
-          AND is_active = true
-    """)
-    
-    select_clause = ",\n".join([
-        f"{row['transformation_rule'] or row['source_column']} AS {row['target_column']}"
-        for row in metadata
-    ])
-    
-    return f"""
-        INSERT INTO raw.{metadata[0]['target_table']}
-        SELECT {select_clause}
-        FROM {source_system}.{source_table}
-    """
-```
-
-## Adding New Data Sources
-
-### Step 1: Source Profiling
-```sql
--- Analyze source table structure
-SELECT column_name, data_type, count_distinct, null_percentage
-FROM source_system.information_schema.columns
-WHERE table_name = 'NEW_TABLE';
-```
-
-### Step 2: Define Mappings
-```sql
-INSERT INTO config.metadata_registry
-SELECT 
-  'cerner' AS source_system,
-  'VITAL_SIGNS' AS source_table,
-  'TEMP_VALUE' AS source_column,
-  'raw' AS target_schema,
-  'vitals' AS target_table,
-  'temperature_celsius' AS target_column,
-  'NUMERIC(5,2)' AS data_type,
-  'CASE WHEN TEMP_UNIT = ''F'' THEN (source_value - 32) * 5/9 ELSE source_value END' AS transformation_rule,
-  true AS is_active;
-```
-
-### Step 3: Validation
-```sql
--- Test transformation logic
-SELECT 
-  source_column,
-  target_column,
-  transformation_rule,
-  -- Simulate transformation
-  regexp_replace(transformation_rule, 'source_value', '''98.6''') AS test_expression
-FROM config.metadata_registry
-WHERE source_table = 'VITAL_SIGNS';
-```
-
-### Step 4: Deploy
 ```bash
-# Trigger ingestion pipeline
-python ingestion_orchestrator.py --source=cerner --table=VITAL_SIGNS --validate
-python ingestion_orchestrator.py --source=cerner --table=VITAL_SIGNS --execute
+python data_generation/generate_data.py     # CSVs -> data_generation/2025/
+python utils/csv_to_parquet.py              # -> data_generation/parquet/
+python -m utils.upload_files_to_stage       # PUT -> @RAW_PHI.HEALTHCARE_DATA_STAGE/2023/
+snowsql -f scripts/load_data_to_snowflake.sql
 ```
 
-## Change Management
+`upload_files_to_stage` reads credentials from `.env` and takes `--folder`,
+`--stage`, `--subdirectory` and `--pattern`. It exits non-zero if any file fails to
+upload.
+
+## Explicit COPY path
+
+Each raw table has one `COPY INTO ... FROM (SELECT $1:col::TYPE ...)` block reading
+`@healthcare_data_stage/2023/<table>.parquet`, with `ON_ERROR = 'ABORT_STATEMENT'`.
+Casts are explicit because the Parquet files come from CSV, so dates and
+timestamps arrive as strings. DATE columns are cast through `TIMESTAMP_NTZ` to
+tolerate a time part. `_loaded_at` is set to `CURRENT_TIMESTAMP()` at load.
+
+## Metadata-driven path
+
+Configuration lives in `RAW_PHI` tables, so adding or changing a source is a data
+change, not a code change:
+
+| Table | Answers |
+|---|---|
+| `FILE_FORMAT_MASTER` | How to parse a file (type, compression, encoding, format options) |
+| `SOURCE_FILE_CONFIG` | What arrives where: stage path, file pattern, ingestion type (`BATCH` / `INCREMENTAL` / `STREAM`), schedule, active flag |
+| `DATA_FIELD_MASTER` | Canonical business fields: type, length/precision, PII flag, domain |
+| `FILE_COLUMN_MAPPING` | File column → business field, position, PK flag, `transformation_rule`, `default_value`, `validation_rule` |
+| `RAW_TABLE_MAPPING` | Where it lands: raw table, error table, load type (`APPEND` / `MERGE` / `FULL_REFRESH`), PK / merge keys, clustering |
+| `BATCH_RUN_LOG` | One row per run: status, rows read/inserted/updated/errored, files, duration, error |
+| `FILE_PROCESS_LOG` | One row per file processed |
+
+### `SP_LOAD_RAW_TABLE(source_id, batch_run_date)`
+
+1. Read the source's config, file format and raw-table mapping
+2. Insert a `STARTED` row in `BATCH_RUN_LOG`
+3. Build the column list and `SELECT` clause from `FILE_COLUMN_MAPPING`
+   (applying `transformation_rule`, e.g. `CURRENT_TIMESTAMP()` or `METADATA$FILENAME`)
+4. Create a temporary staging table and a temporary file format
+5. `COPY INTO` the temp table from `landing_path` + `file_pattern`
+6. Apply the load type: `FULL_REFRESH` (truncate + insert), `APPEND` (insert), or
+   `MERGE` on `merge_key_fields`
+7. Apply clustering if configured
+8. Update `BATCH_RUN_LOG` with counts and status. Drop temp objects. On error,
+   mark the batch `FAILED` and return the error.
+
+### `SP_LOAD_ALL_RAW_TABLES(batch_run_date)`
+
+Loops over active `SOURCE_FILE_CONFIG` rows in `source_id` order, calls
+`SP_LOAD_RAW_TABLE` for each, and returns `COMPLETED: Success=<n>, Failed=<n>`.
+
 ```sql
--- Deactivate deprecated column
-UPDATE config.metadata_registry
-SET is_active = false
-WHERE source_system = 'epic' AND source_column = 'OLD_FIELD';
+CALL RAW_PHI.SP_LOAD_RAW_TABLE(8);              -- encounters
+CALL RAW_PHI.SP_LOAD_ALL_RAW_TABLES(CURRENT_DATE());
 
--- Add new derived column
-INSERT INTO config.metadata_registry VALUES
-  ('epic', 'LAB_RESULTS', NULL, 'raw', 'labs', 'is_critical', 'BOOLEAN',
-   'result_value > critical_high OR result_value < critical_low', true);
+SELECT * FROM RAW_PHI.BATCH_RUN_LOG ORDER BY batch_run_timestamp DESC LIMIT 20;
 ```
 
-## Audit Trail
-```sql
-CREATE TABLE config.metadata_registry_audit (
-  change_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  changed_by VARCHAR(100),
-  change_type VARCHAR(20), -- INSERT, UPDATE, DELETE
-  registry_record JSONB
-);
+Note: the script is written for `ISOMETRICS_DEV` (e.g. the `FILE_LOG_ID` sequence
+is created as `ISOMETRICS_DEV.RAW_PHI.FILE_LOG_ID`) and recreates its config
+tables with `CREATE OR REPLACE`. Rerunning the whole script resets the
+configuration and run history.
 
--- Trigger on metadata changes
-CREATE TRIGGER audit_metadata_changes
-  AFTER INSERT OR UPDATE OR DELETE ON config.metadata_registry
-  FOR EACH ROW EXECUTE FUNCTION log_metadata_change();
-```
+## Adding a raw source
 
-## Performance Optimization
-- **Batch processing**: Group columns by transformation complexity
-- **Parallel execution**: Partition large tables by source_system
-- **Incremental loads**: Add `last_modified` tracking to metadata
-- **Caching**: Materialize frequently-used transformations
+1. **DDL**: add `CREATE TABLE raw_<name>` to `scripts/isometrics_healthcare_snowflake_setup.sql`
+   (include `hospital_id` if it's tenant-scoped, and `_loaded_at`).
+2. **Data**: add a generator method and a `main()` call in
+   `data_generation/generate_data.py`, and the CSV name in `utils/csv_to_parquet.py`.
+   Generated columns must match the DDL exactly.
+3. **Load**: add a `COPY INTO` block to `scripts/load_data_to_snowflake.sql`, and/or
+   `SOURCE_FILE_CONFIG` / `FILE_COLUMN_MAPPING` / `RAW_TABLE_MAPPING` rows for the
+   procedure path.
+4. **dbt**: add the table to `models/staging/healthcare/_healthcare__sources.yml`,
+   create `stg_healthcare__<name>.sql` with the `apply_rls_policy()` post-hook, and
+   document and test it in `_healthcare__models.yml`.
+
+`assert_rls_policy_applied` will fail until the new staging model has the policy
+attached, which is the intended safety net.

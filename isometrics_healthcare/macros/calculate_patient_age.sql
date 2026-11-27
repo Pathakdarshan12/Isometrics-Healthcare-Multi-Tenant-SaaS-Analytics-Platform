@@ -1,5 +1,5 @@
 {% macro calculate_patient_age(date_of_birth_column, reference_date='current_date()') %}
-  /*
+  {#
     Calculate patient age in years from date of birth
     Handles edge cases and HIPAA compliance
 
@@ -12,15 +12,16 @@
 
     Usage:
       {{ calculate_patient_age('date_of_birth') }} as age_years
-  */
+  #}
 
-  datediff('year', {{ date_of_birth_column }}, {{ reference_date }})
+  -- completed years; datediff('year') would count a birthday that hasn't happened yet
+  floor(months_between({{ reference_date }}, {{ date_of_birth_column }}) / 12)::int
 
 {% endmacro %}
 
 
 {% macro calculate_age_group(age_column) %}
-  /*
+  {#
     Categorize age into standard healthcare age groups
 
     Age Groups:
@@ -30,7 +31,7 @@
 
     Usage:
       {{ calculate_age_group('age_years') }} as age_group
-  */
+  #}
 
   case
     when {{ age_column }} < 18 then 'Pediatric'
@@ -43,12 +44,12 @@
 
 
 {% macro calculate_age_bucket(age_column) %}
-  /*
+  {#
     Create 10-year age buckets for demographic analysis
 
     Usage:
       {{ calculate_age_bucket('age_years') }} as age_bucket
-  */
+  #}
 
   case
     when {{ age_column }} < 10 then '0-9'
@@ -68,12 +69,12 @@
 
 
 {% macro is_pediatric(age_column) %}
-  /*
+  {#
     Boolean flag for pediatric patients
 
     Usage:
       {{ is_pediatric('age_years') }} as is_pediatric
-  */
+  #}
 
   case when {{ age_column }} < 18 then true else false end
 
@@ -81,12 +82,12 @@
 
 
 {% macro is_geriatric(age_column) %}
-  /*
+  {#
     Boolean flag for geriatric patients
 
     Usage:
       {{ is_geriatric('age_years') }} as is_geriatric
-  */
+  #}
 
   case when {{ age_column }} >= 65 then true else false end
 

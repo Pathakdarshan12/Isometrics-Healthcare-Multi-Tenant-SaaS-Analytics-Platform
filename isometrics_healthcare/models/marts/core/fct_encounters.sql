@@ -14,16 +14,9 @@
 /*
   Incremental Strategy:
   - delete+insert chosen over merge for performance
-  - Partitioned by hospital_id + date for efficient deletes
-  - Handles late-arriving data by deleting and re-inserting affected partitions
-
-     {% if is_incremental() %}
-        -- Incremental logic: Only process new or updated encounters
-        where loaded_at_timestamp > (
-            select max(loaded_at_timestamp)
-            from {{ this }}
-        )
-    {% endif %}
+  - Clustered by hospital_id + date for efficient deletes
+  - Late-arriving/updated rows are picked up via loaded_at_timestamp and
+    replace the existing row with the same encounter_id
 */
 
 with enriched_encounters as (
@@ -97,6 +90,14 @@ final as (
         current_timestamp() as _dbt_updated_at
 
     from enriched_encounters
+
+    {% if is_incremental() %}
+    -- Only process encounters loaded since the last run
+    where loaded_at_timestamp > (
+        select coalesce(max(loaded_at_timestamp), '1900-01-01'::timestamp_ntz)
+        from {{ this }}
+    )
+    {% endif %}
 
 )
 

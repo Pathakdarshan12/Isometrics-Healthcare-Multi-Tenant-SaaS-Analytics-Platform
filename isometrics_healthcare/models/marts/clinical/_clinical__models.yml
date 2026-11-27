@@ -222,3 +222,45 @@ models:
                 values: ['Meets Target', 'Near Target', 'Below Target']
       - name: gap_to_target_pct
         description: "Gap between performance and target"
+
+  - name: fct_quality_measure_performance
+    description: >
+      Quarterly CMS core-measure performance per hospital from abstracted measure
+      records. Performance rate = numerator / (denominator - exclusions). Includes
+      median/p90 time-to-treatment and case-mix context (mortality, Charlson index).
+    config:
+      meta:
+        owner: "quality-analytics@company.com"
+        contains_phi: false
+    tests:
+      - has_tenant_column
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['hospital_id', 'measure_code', 'reporting_quarter']
+    columns:
+      - name: quality_measure_performance_key
+        tests:
+          - not_null
+          - unique
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: measure_code
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['SEP-1', 'AMI-8a', 'STK-4', 'HF-2', 'PN-6']
+      - name: performance_rate_pct
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+              config:
+                where: "performance_rate_pct is not null"
+      - name: performance_status
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Meets target', 'Needs improvement', 'Below target', 'No eligible cases']

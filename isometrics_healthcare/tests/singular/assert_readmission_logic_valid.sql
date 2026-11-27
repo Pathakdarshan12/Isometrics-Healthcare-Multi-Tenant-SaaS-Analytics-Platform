@@ -3,10 +3,17 @@
 -- ============================================
 
 /*
-  Test that readmission logic is correctly implemented.
+  Independently recomputes the 30-day readmission flag and compares it with
+  stg_healthcare__encounters.is_readmission.
 
-  FIXED: Now uses the same lag() approach as the staging model
-  to ensure exact matching of readmission calculations.
+  The staging model uses lag() over inpatient stays; this test uses a self-join
+  instead, so it does not simply restate the model's own logic.
+
+  Definition: an inpatient admission is a readmission if the patient's most
+  recent prior inpatient stay at the same hospital was discharged 1-30 days
+  before this admission. Intervening ED/outpatient visits do not reset it.
+
+  Expected Result: ZERO violations
 */
 
 {{ config(severity='warn') }}
@@ -19,118 +26,70 @@ with encounters as (
         encounter_type,
         admission_date,
         discharge_date,
-        is_readmission,
-        previous_encounter_id,
-        previous_discharge_date,
-        previous_encounter_type,
-        days_since_last_discharge
+        is_readmission
     from {{ ref('stg_healthcare__encounters') }}
-    where encounter_type = 'Inpatient'
-        and discharge_date is not null
 ),
 
--- Recalculate readmission flag using EXACT same logic as staging model
-readmission_validation as (
-    select
-        encounter_id,
-        hospital_id,
-        patient_id,
-        admission_date,
-        encounter_type,
-        is_readmission,
-
-        -- Use the previous_* fields that were calculated via lag() in staging
-        previous_encounter_id,
-        previous_discharge_date,
-        previous_encounter_type,
-        days_since_last_discharge,
-
-        -- Recalculate what the flag SHOULD be using exact same logic
-        case
-            when encounter_type = 'Inpatient'
-                and previous_encounter_type = 'Inpatient'
-                and previous_discharge_date is not null
-                and days_since_last_discharge between 1 and 30
-            then true
-            else false
-        end as expected_is_readmission,
-
-        -- Validation flags
-        case
-            when previous_encounter_id is not null
-            then true
-            else false
-        end as has_previous_encounter,
-
-        case
-            when days_since_last_discharge between 1 and 30
-            then true
-            else false
-        end as within_30_days,
-
-        case
-            when previous_encounter_type = 'Inpatient'
-            then true
-            else false
-        end as previous_was_inpatient
-
-    from encounters
+inpatient as (
+    select * from encounters where encounter_type = 'Inpatient'
 ),
 
--- Find violations where actual flag doesn't match expected
-violations as (
+-- Most recent prior inpatient stay per inpatient admission
+prior_stay as (
     select
-        encounter_id,
-        hospital_id,
-        patient_id,
-        admission_date,
-        is_readmission,
-        expected_is_readmission,
-        previous_encounter_id,
-        previous_discharge_date,
-        days_since_last_discharge,
-        has_previous_encounter,
-        within_30_days,
-        previous_was_inpatient,
+        cur.encounter_id,
+        prev.encounter_id as prior_encounter_id,
+        prev.discharge_date as prior_discharge_date
+    from inpatient cur
+    join inpatient prev
+        on prev.patient_id = cur.patient_id
+        and prev.hospital_id = cur.hospital_id
+        and (
+            prev.admission_date < cur.admission_date
+            or (prev.admission_date = cur.admission_date and prev.encounter_id < cur.encounter_id)
+        )
+    qualify row_number() over (
+        partition by cur.encounter_id
+        order by prev.admission_date desc, prev.encounter_id desc
+    ) = 1
+),
 
-        -- Detailed error message
-        case
-            when is_readmission = true and expected_is_readmission = false then
-                'Marked as readmission but logic says it should not be: ' ||
-                case
-                    when not has_previous_encounter then 'No previous encounter'
-                    when not within_30_days then 'Outside 30-day window (' ||
-                        coalesce(days_since_last_discharge::varchar, 'NULL') || ' days)'
-                    when not previous_was_inpatient then 'Previous was not inpatient'
-                    else 'Unknown reason'
-                end
-
-            when is_readmission = false and expected_is_readmission = true then
-                'NOT marked as readmission but should be: ' ||
-                'Has previous inpatient discharge ' ||
-                coalesce(days_since_last_discharge::varchar, 'NULL') || ' days ago'
-
-            else 'Logic mismatch - investigate'
-        end as validation_error
-
-    from readmission_validation
-    where is_readmission != expected_is_readmission
+expected as (
+    select
+        e.encounter_id,
+        e.hospital_id,
+        e.patient_id,
+        e.encounter_type,
+        e.admission_date,
+        e.is_readmission,
+        p.prior_encounter_id,
+        p.prior_discharge_date,
+        datediff('day', p.prior_discharge_date, e.admission_date) as days_since_prior_inpatient,
+        coalesce(
+            e.encounter_type = 'Inpatient'
+            and datediff('day', p.prior_discharge_date, e.admission_date) between 1 and 30,
+            false
+        ) as expected_is_readmission
+    from encounters e
+    left join prior_stay p on e.encounter_id = p.encounter_id
 )
 
--- Return violations (should be ZERO)
 select
     encounter_id,
     hospital_id,
     patient_id,
+    encounter_type,
     admission_date,
     is_readmission as actual_flag,
     expected_is_readmission as expected_flag,
-    previous_encounter_id,
-    previous_discharge_date,
-    days_since_last_discharge,
-    validation_error,
-
+    prior_encounter_id,
+    prior_discharge_date,
+    days_since_prior_inpatient,
+    case
+        when is_readmission and not expected_is_readmission
+            then 'Flagged as readmission but no prior inpatient discharge 1-30 days earlier'
+        else 'Prior inpatient discharge 1-30 days earlier but not flagged'
+    end as validation_error,
     '⚠️ ACTION: Review readmission calculation logic in staging model' as action_required
-
-from violations
-order by admission_date desc
+from expected
+where is_readmission != expected_is_readmission

@@ -16,7 +16,7 @@
     has_chronic_disease=false,
     admission_type='elective'
 ) %}
-/*
+{#
   APACHE II (Acute Physiology and Chronic Health Evaluation II) Score
 
   Predicts mortality risk in ICU patients.
@@ -54,7 +54,7 @@
         has_chronic_disease='has_chronic_organ_insufficiency',
         admission_type='admission_type'
     ) }} as apache_ii_score
-*/
+#}
 
 (
   -- Temperature Score (rectal, 0-4 points)
@@ -262,12 +262,12 @@
 
 
 {% macro apache_ii_mortality_risk(score_column) %}
-/*
+{#
   Convert APACHE II score to estimated mortality risk percentage
 
   Usage:
     {{ apache_ii_mortality_risk('apache_ii_score') }} as predicted_mortality_pct
-*/
+#}
 
 case
   when {{ score_column }} <= 4 then 4

@@ -1,394 +1,214 @@
-# Row-Level Security (RLS) Implementation Guide
+# Row-Level Security (RLS) Implementation
 
-## Architecture
-RLS implemented via dbt macros with hospital assignments stored in `user_hospital_mapping` table.
+Tenant isolation is enforced by **Snowflake row access policies**, not by `WHERE`
+filters in dbt models. A policy is evaluated by Snowflake on every query against
+the object it's attached to, whoever runs the query and however they reach it
+(dbt, the dashboard, the API, a worksheet). A model never filters on
+`CURRENT_ROLE()` itself. That pattern silently returns zero rows when the model is
+built or queried under another role, and `assert_no_role_filters_in_models` fails
+the build if anyone adds it.
 
-## Database Objects
+```
+query (any role) ──► mart table / staging view
+                         │ hospital_isolation_policy ON (hospital_id)
+                         ▼
+             CASE on CURRENT_ROLE() / CURRENT_DATABASE()
+             ├─ admin / dbt build roles in their own DB ─► all rows
+             ├─ HOSPITAL_<ID>_ANALYST ─► rows where hospital_id = <ID>
+             ├─ HOSPITAL_ANALYST ─► rows mapped in AUDIT.user_hospital_mapping
+             └─ anything else ─► no rows (fail closed)
+```
 
-### user_hospital_mapping Table
+## Objects
+
+All created per database by `dbt run-operation setup_rls_policies`
+(`isometrics_healthcare/macros/setup_rls_policies.sql`):
+
+| Object | Purpose |
+|---|---|
+| `<db>.RAW_PHI.HOSPITAL_ISOLATION_POLICY` | Tenant policy attached to every tenant-scoped staging view and mart table |
+| `<db>.RAW_PHI.PHI_ACCESS_POLICY` | Stricter policy for raw PHI tables (`HOSPITAL_<ID>_PHI_ANALYST`, PHI admins, auditors) |
+| `<db>.AUDIT.user_hospital_mapping` | Per-user, time-boxed hospital grants for the generic `HOSPITAL_ANALYST` role |
+
+`scripts/create_rls_policies.sql` is the one-time ACCOUNTADMIN version for dev
+(it also attaches `PHI_ACCESS_POLICY` to the raw tables and creates example
+hospital roles).
+
+### Mapping table
+
 ```sql
-CREATE TABLE config.user_hospital_mapping (
-  user_email VARCHAR(200) PRIMARY KEY,
-  hospital_id VARCHAR(50) NOT NULL,
-  role_name VARCHAR(100),
-  granted_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  is_active BOOLEAN DEFAULT true
+CREATE TABLE IF NOT EXISTS <db>.AUDIT.user_hospital_mapping (
+    user_name VARCHAR(255),
+    role_name VARCHAR(255),
+    hospital_id VARCHAR(50),
+    access_start_date DATE,
+    access_end_date DATE,
+    access_reason VARCHAR(1000),
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    created_by VARCHAR(255) DEFAULT CURRENT_USER(),
+    PRIMARY KEY (user_name, role_name, hospital_id)
 );
-
--- Example mappings
-INSERT INTO config.user_hospital_mapping VALUES
-  ('analyst1@hospital.com', 'H001', 'hospital_H001_role', CURRENT_TIMESTAMP, true),
-  ('analyst2@hospital.com', 'H002', 'hospital_H002_role', CURRENT_TIMESTAMP, true),
-  ('multi_analyst@hospital.com', 'H001,H002', 'multi_hospital_role', CURRENT_TIMESTAMP, true);
 ```
 
-### Roles Created
+Only the `HOSPITAL_ANALYST` branch reads this table. Users on a hospital-specific
+role (`HOSPITAL_HOSP_0001_ANALYST`) are scoped by the role name alone. One row per
+(user, hospital); a user can have several rows to see several hospitals, each with
+its own access window.
+
+### Policy body
+
+The body lives in the `rls_hospital_isolation_body()` macro:
+
 ```sql
--- Per-hospital roles
-CREATE ROLE hospital_H001_role;
-CREATE ROLE hospital_H002_role;
-CREATE ROLE hospital_H003_role;
-
--- Multi-hospital role
-CREATE ROLE multi_hospital_role;
-
--- Grant schema access
-GRANT USAGE ON SCHEMA raw, staging, mart TO hospital_H001_role;
-GRANT SELECT ON ALL TABLES IN SCHEMA raw, staging, mart TO hospital_H001_role;
-```
-
-## dbt Macro Implementation
-
-### Macro: apply_rls.sql
-```sql
-{% macro apply_rls(hospital_id_column='hospital_id') %}
-  {%- if target.name == 'prod' -%}
-    {% set current_user_query %}
-      SELECT hospital_id 
-      FROM config.user_hospital_mapping 
-      WHERE user_email = CURRENT_USER()
-        AND is_active = true
-      LIMIT 1
-    {% endset %}
-    
-    {% set user_hospitals = run_query(current_user_query) %}
-    
-    {% if execute and user_hospitals %}
-      {% set hospital_list = user_hospitals.columns[0].values() | join(',') %}
-      WHERE {{ hospital_id_column }} IN ({{ hospital_list }})
-    {% else %}
-      WHERE 1=0  -- No access if mapping not found
-    {% endif %}
-  {%- endif -%}
-{% endmacro %}
-```
-
-### Macro: get_user_hospitals.sql
-```sql
-{% macro get_user_hospitals() %}
-  SELECT hospital_id 
-  FROM config.user_hospital_mapping 
-  WHERE user_email = CURRENT_USER()
-    AND is_active = true
-{% endmacro %}
-```
-
-### Macro: create_rls_view.sql
-```sql
-{% macro create_rls_view(base_model, hospital_column='hospital_id') %}
-  CREATE OR REPLACE VIEW {{ this }} AS
-  SELECT *
-  FROM {{ ref(base_model) }}
-  WHERE {{ hospital_column }} IN (
-    SELECT hospital_id 
-    FROM config.user_hospital_mapping 
-    WHERE user_email = CURRENT_USER() 
-      AND is_active = true
-  )
-{% endmacro %}
-```
-
-## Usage in dbt Models
-
-###mart/patient_encounters.sql
-```sql
-{{
-  config(
-    materialized='table',
-    post_hook=[
-      "{{ grant_select_to_roles() }}"
-    ]
-  )
-}}
-
-SELECT 
-  encounter_id,
-  patient_id,
-  hospital_id,
-  encounter_datetime,
-  discharge_datetime
-FROM {{ ref('stg_encounters') }}
-
--- RLS applied at query time via views
-```
-
-### mart/rls_views/v_patient_encounters.sql
-```sql
-{{
-  config(
-    materialized='view'
-  )
-}}
-
-{{ create_rls_view('patient_encounters') }}
-```
-
-**Alternative: Inline filtering**
-```sql
-SELECT *
-FROM {{ ref('patient_encounters') }}
-{{ apply_rls('hospital_id') }}
-```
-
-### Secure Aggregation Example
-```sql
--- mart/hospital_metrics.sql
-WITH user_hospitals AS (
-  {{ get_user_hospitals() }}
-)
-
-SELECT 
-  e.hospital_id,
-  COUNT(DISTINCT e.encounter_id) AS encounter_count,
-  AVG(cs.news2_score) AS avg_news2
-FROM {{ ref('patient_encounters') }} e
-JOIN {{ ref('clinical_scores') }} cs ON e.encounter_id = cs.encounter_id
-WHERE e.hospital_id IN (SELECT hospital_id FROM user_hospitals)
-GROUP BY e.hospital_id
-```
-
-## New Hospital Onboarding
-
-### Step 1: Create Role
-```sql
-CREATE ROLE hospital_H004_role;
-GRANT USAGE ON SCHEMA raw, staging, mart TO hospital_H004_role;
-GRANT SELECT ON ALL TABLES IN SCHEMA raw, staging, mart TO hospital_H004_role;
-```
-
-### Step 2: Add User Mappings
-```sql
-INSERT INTO config.user_hospital_mapping (user_email, hospital_id, role_name) VALUES
-  ('analyst@hospital4.com', 'H004', 'hospital_H004_role'),
-  ('manager@hospital4.com', 'H004', 'hospital_H004_role');
-```
-
-### Step 3: Grant Role to Users
-```sql
-GRANT hospital_H004_role TO analyst@hospital4.com;
-GRANT hospital_H004_role TO manager@hospital4.com;
-```
-
-### Step 4: Deploy dbt Models
-```bash
-# RLS automatically applies via macros
-dbt run --select mart.*
-dbt run --select mart.rls_views.*
-```
-
-### Step 5: Validate Access
-```sql
--- Login as analyst@hospital4.com
-SELECT DISTINCT hospital_id FROM {{ ref('v_patient_encounters') }};
--- Should return only 'H004'
-
-SELECT COUNT(*) FROM {{ ref('v_patient_encounters') }};
--- Verify row count matches expected hospital volume
-```
-
-## Multi-Hospital Access
-
-### Grant Multiple Hospitals
-```sql
--- Comma-separated hospital_id list
-INSERT INTO config.user_hospital_mapping (user_email, hospital_id, role_name) VALUES
-  ('regional_analyst@system.com', 'H001,H002,H003', 'multi_hospital_role');
-
--- Update macro to handle comma-separated values
-```
-
-### Enhanced Macro for Multi-Hospital
-```sql
-{% macro apply_rls(hospital_id_column='hospital_id') %}
-  {%- if target.name == 'prod' -%}
-    WHERE {{ hospital_id_column }} IN (
-      SELECT TRIM(value) 
-      FROM config.user_hospital_mapping,
-      LATERAL SPLIT_TO_TABLE(hospital_id, ',')
-      WHERE user_email = CURRENT_USER()
-        AND is_active = true
+CASE
+  WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN', 'SYSADMIN') THEN TRUE
+  WHEN CURRENT_ROLE() = 'DBT_CI_ROLE'   AND CURRENT_DATABASE() = 'ISOMETRICS_CI' THEN TRUE
+  WHEN CURRENT_ROLE() = 'DBT_DEV_ROLE'  AND (CURRENT_DATABASE() = 'ISOMETRICS_DEV' OR CURRENT_DATABASE() LIKE '%_DEV') THEN TRUE
+  WHEN CURRENT_ROLE() = 'DBT_PROD_ROLE' AND CURRENT_DATABASE() LIKE '%_PROD' THEN TRUE
+  WHEN CURRENT_ROLE() = 'HIPAA_AUDITOR' THEN TRUE
+  WHEN CURRENT_ROLE() LIKE 'HOSPITAL_%_ANALYST' AND CURRENT_ROLE() NOT LIKE '%_PHI_ANALYST' THEN
+    hospital_id = REGEXP_REPLACE(CURRENT_ROLE(), 'HOSPITAL_(.*)_ANALYST', '\\1')
+  WHEN CURRENT_ROLE() = 'HOSPITAL_ANALYST' THEN
+    EXISTS (
+      SELECT 1
+      FROM (
+        SELECT hospital_id AS mapped_hospital_id, user_name, access_start_date, access_end_date
+        FROM <db>.AUDIT.user_hospital_mapping
+      ) m
+      WHERE m.user_name = CURRENT_USER()
+        AND m.mapped_hospital_id = hospital_id
+        AND CURRENT_DATE() BETWEEN m.access_start_date AND m.access_end_date
     )
-  {%- endif -%}
-{% endmacro %}
+  ELSE FALSE
+END
 ```
 
-## Access Control Patterns
+Role naming convention: `HOSPITAL_<hospital_id>_ANALYST`, e.g. hospital
+`HOSP_0001` → role `HOSPITAL_HOSP_0001_ANALYST`.
 
-### Read-Only Analyst
+#### Why the derived table in the mapping lookup
+
+Inside a subquery, an unqualified column name resolves to the subquery's tables
+first. So the obvious
+
 ```sql
-CREATE ROLE hospital_H001_analyst;
-GRANT USAGE ON SCHEMA mart TO hospital_H001_analyst;
-GRANT SELECT ON ALL TABLES IN SCHEMA mart TO hospital_H001_analyst;
-
-INSERT INTO config.user_hospital_mapping VALUES
-  ('readonly@hospital.com', 'H001', 'hospital_H001_analyst', CURRENT_TIMESTAMP, true);
+WHERE m.hospital_id = hospital_id    -- ❌ both sides are m.hospital_id
 ```
 
-### Data Engineer (Full Access)
+compares the mapping column with itself. It's always true, and any user with any
+active mapping sees every hospital. The original policy in this project had
+exactly this bug. Renaming the column inside a derived table
+(`mapped_hospital_id`) leaves the policy argument as the only thing
+`hospital_id` can refer to. The alternative is giving the policy argument a
+distinct name (e.g. `row_hospital_id`). That changes the policy signature, though,
+which requires detaching and recreating the policy everywhere it's attached.
+
+### Creating vs. updating the policy
+
+`setup_rls_policies` is idempotent and safe to run on every deploy:
+
+1. `CREATE SCHEMA IF NOT EXISTS` for `RAW_PHI` and `AUDIT`
+2. `CREATE TABLE IF NOT EXISTS` for the mapping table. It's never replaced, so
+   production access grants survive deploys.
+3. `CREATE ROW ACCESS POLICY IF NOT EXISTS ...`, then
+   `ALTER ROW ACCESS POLICY ... SET BODY -> ...`. Body changes apply in place,
+   which matters because `CREATE OR REPLACE` fails while a policy is attached.
+4. On the `ci` target only, seed `DBT_CI_ROLE` mappings for `HOSP_0001` / `HOSP_0002`.
+
+To change who can see what, edit `rls_hospital_isolation_body()` /
+`rls_phi_access_body()` and rerun the operation.
+
+## Attaching the policy: `apply_rls_policy`
+
+Every tenant-scoped staging and mart model declares
+
 ```sql
-CREATE ROLE hospital_H001_engineer;
-GRANT ALL ON SCHEMA raw, staging, mart TO hospital_H001_engineer;
-
-INSERT INTO config.user_hospital_mapping VALUES
-  ('engineer@hospital.com', 'H001', 'hospital_H001_engineer', CURRENT_TIMESTAMP, true);
+{{ config(post_hook=["{{ apply_rls_policy() }}"]) }}
 ```
 
-### Temporary Access (Time-Limited)
-```sql
--- Add expiration column
-ALTER TABLE config.user_hospital_mapping 
-ADD COLUMN access_expires_at TIMESTAMP;
+After the model builds, the macro:
 
--- Grant 30-day access
-INSERT INTO config.user_hospital_mapping VALUES
-  ('temp_auditor@external.com', 'H001', 'hospital_H001_auditor', 
-   CURRENT_TIMESTAMP, true, CURRENT_TIMESTAMP + INTERVAL '30 days');
+1. skips ephemeral models (they don't exist in the warehouse)
+2. looks up attached row access policies in
+   `INFORMATION_SCHEMA.POLICY_REFERENCES` (real time, unlike `ACCOUNT_USAGE`)
+3. if none are attached, runs `ALTER VIEW` or `ALTER TABLE` (chosen by
+   materialization) `... ADD ROW ACCESS POLICY <db>.RAW_PHI.HOSPITAL_ISOLATION_POLICY ON (hospital_id)`
+4. if the same policy is already attached, does nothing. This is the normal case
+   for incremental tables, which persist between runs.
+5. if a *different* row access policy is attached, fails the run. Snowflake
+   allows only one per object.
 
--- Modified macro to check expiration
-{% macro apply_rls(hospital_id_column='hospital_id') %}
-  WHERE {{ hospital_id_column }} IN (
-    SELECT hospital_id 
-    FROM config.user_hospital_mapping 
-    WHERE user_email = CURRENT_USER()
-      AND is_active = true
-      AND (access_expires_at IS NULL OR access_expires_at > CURRENT_TIMESTAMP)
-  )
-{% endmacro %}
-```
+Tables and views that dbt recreates (`CREATE OR REPLACE`) lose their policy, and
+the hook re-attaches it in the same run. Reference models (`stg_reference__*`)
+have no `hospital_id` and no hook.
 
-## Troubleshooting
+To detach in dev:
 
-### User Gets Empty Results
-```sql
--- Check mapping exists
-SELECT * FROM config.user_hospital_mapping 
-WHERE user_email = CURRENT_USER();
-
--- Check role membership
-SELECT CURRENT_ROLE();
-SHOW GRANTS TO USER CURRENT_USER();
-
--- Verify hospital_id in data
-SELECT DISTINCT hospital_id FROM mart.patient_encounters;
-```
-
-### Performance Issues
-```sql
--- Add index on hospital_id
-CREATE INDEX idx_encounters_hospital ON mart.patient_encounters(hospital_id);
-
--- Materialize user_hospitals as session variable
-ALTER SESSION SET user_hospital_id = (
-  SELECT hospital_id FROM config.user_hospital_mapping 
-  WHERE user_email = CURRENT_USER()
-);
-
--- Use session variable in macro
-WHERE {{ hospital_id_column }} = $user_hospital_id
-```
-
-### Audit Access Patterns
-```sql
--- Log RLS queries
-CREATE TABLE audit.rls_access_log (
-  access_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  user_email VARCHAR(200),
-  hospital_id VARCHAR(50),
-  table_name VARCHAR(200),
-  row_count INTEGER
-);
-
--- Trigger on view access (platform-specific)
-CREATE OR REPLACE PROCEDURE log_rls_access()
-AS $$
-BEGIN
-  INSERT INTO audit.rls_access_log
-  SELECT CURRENT_TIMESTAMP, CURRENT_USER(), hospital_id, 'patient_encounters', COUNT(*)
-  FROM mart.patient_encounters
-  WHERE hospital_id IN (SELECT hospital_id FROM config.user_hospital_mapping WHERE user_email = CURRENT_USER())
-  GROUP BY hospital_id;
-END;
-$$;
-```
-
-## Testing RLS
-
-### dbt Test: Verify RLS Coverage
-```yaml
-# tests/assert_all_marts_have_hospital_id.sql
-SELECT table_name
-FROM {{ target.schema }}.INFORMATION_SCHEMA.TABLES
-WHERE table_schema = 'MART'
-  AND table_name NOT IN (
-    SELECT table_name
-    FROM {{ target.schema }}.INFORMATION_SCHEMA.COLUMNS
-    WHERE table_schema = 'MART' AND column_name = 'hospital_id'
-  )
-```
-
-### Integration Test
-```sql
--- tests/rls_isolation_test.sql
--- Verify users cannot see other hospitals' data
-WITH user1_hospitals AS (
-  SELECT hospital_id FROM config.user_hospital_mapping 
-  WHERE user_email = 'user1@hospital.com'
-),
-user2_hospitals AS (
-  SELECT hospital_id FROM config.user_hospital_mapping 
-  WHERE user_email = 'user2@hospital.com'
-)
-
-SELECT COUNT(*) AS violations
-FROM user1_hospitals u1
-JOIN user2_hospitals u2 ON u1.hospital_id = u2.hospital_id
--- Should return 0 unless users share hospitals
-```
-
-## Migration from Manual RLS
-
-### Step 1: Export Existing Policies
-```sql
--- Extract current RLS policies
-SELECT schemaname, tablename, policyname, qual
-FROM pg_policies
-WHERE schemaname = 'mart';
-```
-
-### Step 2: Populate user_hospital_mapping
-```sql
--- Derive from existing role grants
-INSERT INTO config.user_hospital_mapping
-SELECT 
-  grantee AS user_email,
-  REGEXP_SUBSTR(granted_role, 'hospital_([A-Z0-9]+)_role', 1, 1, 'e', 1) AS hospital_id,
-  granted_role AS role_name,
-  CURRENT_TIMESTAMP AS granted_date,
-  true AS is_active
-FROM information_schema.role_table_grants
-WHERE granted_role LIKE 'hospital_%_role';
-```
-
-### Step 3: Deploy dbt Macros
 ```bash
-dbt run-operation apply_rls --args '{hospital_id_column: hospital_id}'
+dbt run-operation remove_rls_policy --args '{model_name: stg_healthcare__patients, object_kind: view}'
 ```
 
-### Step 4: Drop Old Policies
+## Verification (all blocking in CI and prod)
+
+| Test | Checks |
+|---|---|
+| `assert_rls_policy_applied` | Every staging/mart model in the dbt graph (except `staging/reference`) has `HOSPITAL_ISOLATION_POLICY` attached on `hospital_id`. It reads `INFORMATION_SCHEMA.POLICY_REFERENCES` per model, so new models are covered automatically and there's no `ACCOUNT_USAGE` lag. |
+| `assert_rls_column_exists` | Every mart has a `hospital_id` column |
+| `has_tenant_column` (generic) | Same, per model in YAML |
+| `assert_no_cross_hospital_encounters`, `assert_no_cross_hospital_data_leakage` | Joined entities never come from different hospitals |
+| `assert_no_role_filters_in_models` | No model filters on `CURRENT_ROLE()` |
+
+```bash
+dbt test --select assert_rls_policy_applied assert_rls_column_exists
+dbt test --select assert_no_cross_hospital_data_leakage assert_no_cross_hospital_encounters
+```
+
+### Manual check as a tenant
+
 ```sql
--- Once macro-based RLS validated
-DROP POLICY IF EXISTS hospital_access ON mart.patient_encounters;
-DROP POLICY IF EXISTS hospital_access ON mart.clinical_scores;
+USE ROLE HOSPITAL_HOSP_0001_ANALYST;
+SELECT hospital_id, COUNT(*) FROM <MARTS_SCHEMA>.FCT_ENCOUNTERS GROUP BY 1;
+-- exactly one row: HOSP_0001
+
+USE ROLE HOSPITAL_ANALYST;   -- as a mapped user
+SELECT DISTINCT hospital_id FROM <MARTS_SCHEMA>.FCT_ENCOUNTERS;
+-- only hospitals with an active mapping row for CURRENT_USER()
 ```
 
-## Performance Benchmarks
+`analyses/test_rls_isolation.sql` contains further ad-hoc checks.
 
-| Access Pattern | Manual RLS Policy | Macro-based RLS View | Difference |
-|----------------|-------------------|----------------------|------------|
-| Single hospital query | 0.8s | 0.9s | +13% |
-| Multi-hospital aggregate | 2.1s | 2.3s | +9% |
-| Cross-hospital join | 5.4s | 5.6s | +4% |
+## Consumers
 
-*Snowflake Large warehouse, 10M encounters, 5 hospitals*
+- **Analytics API** (`api/`): each API key is bound to one Snowflake role, and
+  every request runs `USE ROLE <role>` (with secondary roles disabled) before
+  querying, so the policy above decides what the caller sees. The API's service
+  user must be granted every role its keys map to.
+- **Streamlit dashboard**: connects with the role in `.env`; it sees what that
+  role sees.
 
-**Recommendation**: Use macro-based views for flexibility; switch to native RLS policies if performance critical.
+## Onboarding a hospital (summary)
+
+See [the onboarding runbook](../runbooks/%20tenant_onboarding.md) for the full
+procedure. RLS-wise:
+
+```sql
+CREATE ROLE IF NOT EXISTS HOSPITAL_HOSP_0015_ANALYST;
+GRANT USAGE ON DATABASE ISOMETRICS_PROD TO ROLE HOSPITAL_HOSP_0015_ANALYST;
+GRANT USAGE ON SCHEMA ISOMETRICS_PROD.<MARTS_SCHEMA> TO ROLE HOSPITAL_HOSP_0015_ANALYST;
+GRANT SELECT ON ALL TABLES IN SCHEMA ISOMETRICS_PROD.<MARTS_SCHEMA> TO ROLE HOSPITAL_HOSP_0015_ANALYST;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA ISOMETRICS_PROD.<MARTS_SCHEMA> TO ROLE HOSPITAL_HOSP_0015_ANALYST;
+GRANT ROLE HOSPITAL_HOSP_0015_ANALYST TO USER <user>;
+```
+
+No policy change is needed: the role name carries the hospital ID. See
+[data_model.md](data_model.md#schema-naming) for `<MARTS_SCHEMA>`.
+
+## Limitations
+
+- Build roles (`DBT_*_ROLE`) see all tenants in their own database by design.
+  Protect those credentials accordingly.
+- Ephemeral intermediate models have no policy of their own. They're only
+  reachable through the marts they're compiled into.
+- `fct_cost_attribution` attributes queries by parsing `hospital_id` predicates
+  from query text. Queries scoped only by this policy have no such predicate and
+  are reported as `UNATTRIBUTED`.

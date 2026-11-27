@@ -140,6 +140,23 @@ enriched as (
             else 'Normal'
         end as news_risk_category,
 
+        -- NEWS2 (RCP 2017) from the parameters raw_vital_signs captures.
+        -- Consciousness (ACVPU) and supplemental O2 are not recorded, so they
+        -- score 0: this is a lower bound on the true NEWS2 (max 15 of 20).
+        {{ calculate_news2_score(
+            respiratory_rate='vt.respiratory_rate',
+            spo2='vt.oxygen_saturation_pct',
+            on_supplemental_oxygen='null',
+            temperature_c='(vt.temperature_f - 32) * 5 / 9',
+            systolic_bp='vt.systolic_bp',
+            heart_rate='vt.heart_rate_bpm',
+            consciousness_alert='null'
+        ) }} as news2_partial_score,
+
+        -- qSOFA (Sepsis-3) from respiratory rate + SBP; mentation not recorded,
+        -- so this is a lower bound (max 2 of 3). >= 2 is still a positive screen.
+        {{ calculate_qsofa_score('vt.respiratory_rate', 'vt.systolic_bp', 'null') }} as qsofa_partial_score,
+
         -- Trend analysis
         vt.previous_temperature_f,
         vt.previous_heart_rate_bpm,

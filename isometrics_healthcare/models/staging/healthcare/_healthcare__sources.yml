@@ -6,7 +6,7 @@ sources:
       Raw healthcare data from hospital EMR systems.
       ⚠️ Contains PHI - Access restricted and logged per HIPAA requirements.
 
-    database: isometrics_dev
+    database: "{{ env_var('DBT_RAW_DATABASE', target.database) }}"
     schema: raw_phi
 
     config:

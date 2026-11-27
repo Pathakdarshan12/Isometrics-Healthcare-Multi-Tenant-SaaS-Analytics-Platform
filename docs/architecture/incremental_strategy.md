@@ -1,250 +1,113 @@
-# Incremental Strategy Decision Framework
+# Materialization & Incremental Strategy
 
-## Strategy Selection Matrix
+## What is materialized how
 
-| Model Type | Strategy | Reason | Key Configuration |
-|------------|----------|--------|-------------------|
-| **Raw ingestion tables** | `append` | Immutable source data, no updates | `unique_key: source_record_id` |
-| **Staging transformations** | `delete+insert` | Reprocess changed source records | `unique_key: encounter_id` |
-| **Clinical scores** | `merge` | Late-arriving vitals/labs update scores | `unique_key: [encounter_id, score_timestamp]` |
-| **Aggregate metrics** | `insert_overwrite` (partition) | Daily/hourly rollups, full refresh per period | `partition_by: date_trunc('day', event_date)` |
-| **Slowly-changing dimensions** | `snapshot` (SCD Type 2) | Track historical state changes | `strategy: timestamp, updated_at: modified_timestamp` |
-| **Event streams** | `append` | Immutable event log | No unique_key (append-only) |
+| Layer | Materialization | Why |
+|---|---|---|
+| staging | `view` (18 of 21 are `secure=true`) | Always current with raw; cheap. Secure views hide their definition and disable optimizations that could reveal filtered-out rows |
+| intermediate | `ephemeral` | Business logic shared by marts without storing extra copies. Inlined as CTEs, so no RLS surface of their own |
+| marts (aggregates) | `table` | Rebuilt each run; small (hospital × period grain) |
+| marts (row-level, high volume) | `incremental` | See below |
+| dimensions (hospitals, providers, facilities) | `snapshot` (SCD Type 2) | Keep history of attribute changes |
 
-## Model-Specific Decisions
+Defaults are set in `dbt_project.yml`; individual models override them in
+`config()`.
 
-### `raw_encounters`
-```yaml
-materialized: incremental
-incremental_strategy: append
-unique_key: source_encounter_key
-```
-**Rationale**: Source system provides immutable encounter records. Duplicates prevented by unique_key constraint. Append-only maximizes throughput (no UPDATE/DELETE overhead).
+## Incremental models
 
-**Performance**: 500K rows/min on 4-core warehouse.
+| Model | Strategy | `unique_key` | New-row filter |
+|---|---|---|---|
+| `fct_encounters` | `delete+insert` | `encounter_id` | `loaded_at_timestamp > max(loaded_at_timestamp)` in the target |
+| `fct_billing_transactions` | `merge` | `transaction_id` | none (see below) |
+| `fct_hipaa_audit_trail` | `append` | `audit_id` | `start_time > max(access_timestamp)`; first build loads 7 days |
 
----
+All three use `on_schema_change='fail'` (set explicitly on encounters and billing;
+the project default for the audit trail) and are clustered by `hospital_id` plus a
+date column.
 
-### `stg_encounters`
-```yaml
-materialized: incremental
-incremental_strategy: delete+insert
-unique_key: encounter_id
-is_incremental_compatible: true
-```
-**Rationale**: Source encounters may receive retroactive updates (diagnosis changes, coding corrections). Delete+insert ensures stale records removed before inserting updated versions. Preferred over merge to avoid partial updates from multi-step transformations.
+### `fct_encounters` — `delete+insert`
 
-**Incremental filter**: 
 ```sql
 {% if is_incremental() %}
-  WHERE encounter_datetime >= (SELECT MAX(encounter_datetime) - INTERVAL '7 days' FROM {{ this }})
-{% endif %}
-```
-**Lookback window**: 7 days captures late-arriving updates while limiting reprocessing scope.
-
----
-
-### `clinical_scores`
-```yaml
-materialized: incremental
-incremental_strategy: merge
-unique_key: ['encounter_id', 'score_timestamp']
-merge_update_columns: ['news2_score', 'qsofa_score', 'apache_ii_score', ...]
-```
-**Rationale**: Vitals and labs arrive asynchronously. Initial score calculated with partial data, then updated as additional components arrive. Merge strategy updates existing score records without creating duplicates.
-
-**Update logic**:
-```sql
-{{ config(
-  incremental_strategy='merge',
-  unique_key=['encounter_id', 'score_timestamp'],
-  merge_update_columns=['news2_score', 'qsofa_score', 'sofa_score']
-) }}
-
-SELECT 
-  encounter_id,
-  MAX(measurement_timestamp) AS score_timestamp,
-  {{ calculate_news2(...) }} AS news2_score,
-  {{ calculate_qsofa(...) }} AS qsofa_score
-FROM {{ ref('stg_vitals') }}
-WHERE measurement_timestamp >= {{ get_incremental_filter() }}
-GROUP BY encounter_id
-```
-
-**Performance consideration**: Composite unique_key increases merge complexity. Alternative: Single surrogate key via `{{ dbt_utils.generate_surrogate_key(['encounter_id', 'score_timestamp']) }}`.
-
----
-
-### `daily_census`
-```yaml
-materialized: incremental
-incremental_strategy: insert_overwrite
-partition_by: {
-  "field": "census_date",
-  "data_type": "date",
-  "granularity": "day"
-}
-```
-**Rationale**: Daily aggregates fully recomputed per partition to ensure consistency with upstream corrections. Insert_overwrite replaces only affected partitions, avoiding full table scans.
-
-**Incremental filter**:
-```sql
-{% if is_incremental() %}
-  WHERE census_date >= DATE_TRUNC('day', CURRENT_DATE - INTERVAL '3 days')
-{% endif %}
-```
-**Partition pruning**: Only last 3 days reprocessed, reducing computation by 99%+ for historical data.
-
----
-
-### `dim_patient`
-```yaml
-materialized: incremental
-incremental_strategy: merge
-unique_key: patient_id
-```
-**Rationale**: Patient demographics updated infrequently but must reflect current state. Merge strategy updates existing patient records while preserving historical dimension for unchanged patients.
-
-**Alternative for audit trail**: Implement SCD Type 2 via snapshots:
-```yaml
-snapshots:
-  - name: patient_snapshot
-    strategy: timestamp
-    unique_key: patient_id
-    updated_at: last_modified_timestamp
-```
-Captures full history of patient attribute changes with `dbt_valid_from`/`dbt_valid_to` columns.
-
----
-
-### `fact_lab_results`
-```yaml
-materialized: incremental
-incremental_strategy: append
-```
-**Rationale**: Lab results immutable once resulted. Append-only strategy avoids unnecessary merge overhead. Corrections handled via soft-delete flag (`is_cancelled`) rather than physical deletion.
-
-**Deduplication**: Source-level unique constraint on `lab_order_id + resulted_timestamp` prevents duplicate ingestion.
-
----
-
-### `hourly_vitals_summary`
-```yaml
-materialized: incremental
-incremental_strategy: delete+insert
-unique_key: ['patient_id', 'hour_timestamp']
-```
-**Rationale**: Hourly aggregates may receive late-arriving vitals within reporting window (e.g., manual entry of retrospective measurements). Delete+insert ensures aggregates fully recomputed for affected hours.
-
-**Incremental filter**:
-```sql
-WHERE hour_timestamp >= DATE_TRUNC('hour', CURRENT_TIMESTAMP - INTERVAL '48 hours')
-```
-**Lookback**: 48 hours accommodates clinical documentation lag.
-
----
-
-## Strategy Selection Decision Tree
-
-```
-Is data immutable at source?
-├─ YES → Use `append` strategy
-│         └─ Set unique_key for deduplication
-│
-└─ NO → Are late updates common?
-        ├─ YES → Do updates affect all columns?
-        │        ├─ YES → Use `delete+insert`
-        │        └─ NO → Use `merge` with merge_update_columns
-        │
-        └─ NO → Is data partitioned by time?
-                ├─ YES → Use `insert_overwrite` (partition)
-                └─ NO → Use `delete+insert`
-```
-
-## Performance Benchmarks
-
-| Strategy | 1M Row Update | Storage Overhead | Concurrency Impact |
-|----------|---------------|------------------|--------------------|
-| `append` | 45 sec | Lowest | Minimal (INSERT-only) |
-| `delete+insert` | 3.2 min | Low | Moderate (DELETE locks) |
-| `merge` | 8.1 min | Medium | High (UPDATE locks) |
-| `insert_overwrite` | 1.8 min (1 partition) | Low | Low (partition-level locks) |
-
-*Benchmarks on Snowflake X-Large warehouse, 256-bit encryption, standard storage.*
-
-## Incremental Filter Patterns
-
-### Time-based (most common)
-```sql
-{% if is_incremental() %}
-  WHERE event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
+where loaded_at_timestamp > (
+    select coalesce(max(loaded_at_timestamp), '1900-01-01'::timestamp_ntz)
+    from {{ this }}
+)
 {% endif %}
 ```
 
-### Lookback window (handles late arrivals)
+- Encounters are mostly append-only, but a re-delivered encounter (coding
+  correction, late discharge) gets a new `_loaded_at`. Its `encounter_id` row is
+  then deleted and re-inserted.
+- The filter is on *load* time, not admission date, so late-arriving history
+  (backfills) is picked up by a normal incremental run. No full refresh is needed.
+- `is_readmission` is computed in staging over the patient's full history, so
+  recomputing a single encounter gives the same answer as a full rebuild. One
+  exception: a backfilled *earlier* stay can turn an already-loaded later stay into
+  a readmission. That later row isn't reloaded, so run
+  `dbt run --select fct_encounters --full-refresh` after a historical backfill.
+
+### `fct_billing_transactions` — `merge`
+
+Payment status changes over time (Pending → Paid / Denied), so existing rows must
+be updated in place, which is what `merge` on `transaction_id` does.
+
+**Current limitation:** the model has no `is_incremental()` filter, so every
+run merges the full transaction history. Results are correct, but the run does a
+full rebuild's work. Fixing it means exposing a load timestamp from
+`int_financial__revenue_cycle` (e.g. `loaded_at_timestamp`) and filtering on it
+with a lookback for status updates. Because of `on_schema_change='fail'`, adding
+the column needs a one-time `--full-refresh`.
+
+### `fct_hipaa_audit_trail` — `append`
+
+Audit events are immutable, so rows are only ever inserted. The source is
+`SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY`, which lags by up to ~45 minutes. Each
+run therefore picks up queries that became visible since the newest event already
+stored.
+
+## Choosing a strategy for a new model
+
+```
+Rows never change after they arrive?          → append
+Rows change, and you can identify them by key:
+    whole row is recomputed from source        → delete+insert
+    only some columns change (status, amounts) → merge
+Small aggregate (hospital × day/month)?       → table (simpler than incremental)
+```
+
+Always filter on a load/ingestion timestamp rather than a business date, so late
+data is caught. Also make sure everything the model computes can be recomputed
+from the rows the filter selects. If a value depends on other rows (window
+functions, running totals), either compute it upstream over full history (as
+readmissions are) or plan for a full refresh.
+
+## Snapshots
+
 ```sql
-{% if is_incremental() %}
-  WHERE updated_at >= (SELECT MAX(updated_at) - INTERVAL '3 days' FROM {{ this }})
-{% endif %}
+{% snapshot snap_providers %}
+{{ config(target_schema='snapshots', unique_key='provider_id',
+          strategy='timestamp', updated_at='loaded_at_timestamp',
+          invalidate_hard_deletes=True) }}
+select ... from {{ ref('stg_healthcare__providers') }}
+{% endsnapshot %}
 ```
 
-### Change data capture (CDC)
-```sql
-{% if is_incremental() %}
-  WHERE _fivetran_synced > (SELECT MAX(_fivetran_synced) FROM {{ this }})
-{% endif %}
+`snap_hospitals` and `snap_facilities` follow the same pattern. Query current
+state with `where dbt_valid_to is null`.
+
+## Operations
+
+```bash
+dbt run --select fct_encounters                   # incremental
+dbt run --select fct_encounters --full-refresh    # rebuild from scratch
+dbt snapshot
 ```
 
-### Partition-aware (for insert_overwrite)
-```sql
-{% if is_incremental() %}
-  WHERE DATE(event_timestamp) >= DATE_TRUNC('day', CURRENT_DATE - INTERVAL '7 days')
-{% endif %}
-```
+Changing a model's strategy or columns requires `--full-refresh` (because of
+`on_schema_change='fail'`). The RLS post-hook re-attaches the policy after any
+rebuild (see [rls_implementation.md](rls_implementation.md)).
 
-## Testing Incremental Models
-
-### Validation queries
-```sql
--- Check for duplicate unique_keys (should return 0)
-SELECT unique_key, COUNT(*) 
-FROM {{ ref('clinical_scores') }}
-GROUP BY unique_key
-HAVING COUNT(*) > 1;
-
--- Verify incremental completeness (compare to source)
-SELECT COUNT(*) AS missing_encounters
-FROM {{ source('raw', 'encounters') }} src
-LEFT JOIN {{ ref('stg_encounters') }} tgt ON src.encounter_id = tgt.encounter_id
-WHERE tgt.encounter_id IS NULL
-  AND src.encounter_datetime >= CURRENT_DATE - INTERVAL '30 days';
-
--- Audit incremental logic (last run coverage)
-SELECT 
-  MAX(event_timestamp) AS max_target_timestamp,
-  (SELECT MAX(event_timestamp) FROM {{ source('raw', 'events') }}) AS max_source_timestamp,
-  DATEDIFF('minute', max_target_timestamp, max_source_timestamp) AS lag_minutes
-FROM {{ ref('fact_events') }};
-```
-
-### dbt test configuration
-```yaml
-models:
-  - name: clinical_scores
-    tests:
-      - dbt_utils.unique_combination_of_columns:
-          combination_of_columns: ['encounter_id', 'score_timestamp']
-      - dbt_utils.recency:
-          datepart: hour
-          field: score_timestamp
-          interval: 6  # Alert if scores >6 hours stale
-```
-
-## Migration Checklist
-
-When changing incremental strategy:
-1. **Full refresh required**: `dbt run --full-refresh --select model_name`
-2. **Update downstream dependencies**: Verify dependent models handle strategy change
-3. **Monitor performance**: Compare runtime before/after with `dbt run --select model_name --profile logs`
-4. **Validate data integrity**: Run reconciliation queries against source
-5. **Document decision**: Update this file with rationale
+`analyses/incremental_strategy_benchmark.sql` can be compiled and run to compare
+strategies on your own warehouse. This doc doesn't quote numbers that haven't
+been measured.

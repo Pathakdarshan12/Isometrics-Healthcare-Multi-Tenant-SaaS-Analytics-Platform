@@ -7,7 +7,7 @@
     creatinine=none,
     urine_output_ml=none
 ) %}
-/*
+{#
   Sequential Organ Failure Assessment (SOFA) Score
 
   Used to track organ dysfunction in ICU patients with sepsis.
@@ -31,7 +31,7 @@
         creatinine='serum_creatinine',
         urine_output_ml='urine_output_24hr'
     ) }} as sofa_score
-*/
+#}
 
 (
   -- Respiration Score (0-4)
