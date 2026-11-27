@@ -68,7 +68,7 @@ The body lives in the `rls_hospital_isolation_body()` macro:
 ```sql
 CASE
   WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN', 'SYSADMIN') THEN TRUE
-  WHEN CURRENT_ROLE() = 'DBT_CI_ROLE'   AND CURRENT_DATABASE() = 'ISOMETRICS_CI' THEN TRUE
+  WHEN CURRENT_ROLE() = 'DBT_CI_ROLE'   AND CURRENT_DATABASE() IN ('ISOMETRICS_CI', 'ISOMETRICS_DEV') THEN TRUE
   WHEN CURRENT_ROLE() = 'DBT_DEV_ROLE'  AND (CURRENT_DATABASE() = 'ISOMETRICS_DEV' OR CURRENT_DATABASE() LIKE '%_DEV') THEN TRUE
   WHEN CURRENT_ROLE() = 'DBT_PROD_ROLE' AND CURRENT_DATABASE() LIKE '%_PROD' THEN TRUE
   WHEN CURRENT_ROLE() = 'HIPAA_AUDITOR' THEN TRUE
@@ -84,6 +84,14 @@ CASE
   ELSE FALSE
 END
 ```
+
+`CURRENT_DATABASE()` inside a policy is the database of the **protected object**,
+not the session's current database (verified on Snowflake). The environment
+branches therefore mean "this role may read rows of objects stored in that
+database". CI builds in `ISOMETRICS_CI` but reads its sources from
+`ISOMETRICS_DEV.RAW_PHI`, so `DBT_CI_ROLE` is allowed on both. With only
+`ISOMETRICS_CI`, CI read zero rows from the protected dev raw tables, and every
+test passed vacuously. `assert_core_models_not_empty` now fails in that case.
 
 Role naming convention: `HOSPITAL_<hospital_id>_ANALYST`, e.g. hospital
 `HOSP_0001` → role `HOSPITAL_HOSP_0001_ANALYST`.
