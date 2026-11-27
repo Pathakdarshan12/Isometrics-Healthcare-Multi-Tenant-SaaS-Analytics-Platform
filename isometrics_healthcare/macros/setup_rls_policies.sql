@@ -3,11 +3,13 @@
   create the policy and keep an existing one in sync (ALTER ... SET BODY),
   without CREATE OR REPLACE (which fails while the policy is attached).
 
-  NOTE on the mapping-table subquery: inside a subquery, an unqualified
-  `hospital_id` binds to the subquery table's own column, not the policy
-  argument, so `m.hospital_id = hospital_id` is always true and leaks every
-  tenant. The derived table renames the column so `hospital_id` can only
-  resolve to the policy argument.
+  NOTE on the mapping-table lookup: written as `hospital_id IN (SELECT
+  m.hospital_id ...)` so the policy argument (outside the subquery) and the
+  mapping column (qualified inside it) cannot be confused. Snowflake rejects
+  a derived table (subquery in FROM) inside a correlated subquery in a row
+  access policy ("Unsupported subquery type"), so don't use that form.
+  Verified on Snowflake: a HOSPITAL_ANALYST mapped to two hospitals sees
+  exactly those two.
 #}
 
 {% macro rls_hospital_isolation_body() %}
@@ -20,14 +22,10 @@
     WHEN CURRENT_ROLE() LIKE 'HOSPITAL_%_ANALYST' AND CURRENT_ROLE() NOT LIKE '%_PHI_ANALYST' THEN
       hospital_id = REGEXP_REPLACE(CURRENT_ROLE(), 'HOSPITAL_(.*)_ANALYST', '\\1')
     WHEN CURRENT_ROLE() = 'HOSPITAL_ANALYST' THEN
-      EXISTS (
-        SELECT 1
-        FROM (
-          SELECT hospital_id AS mapped_hospital_id, user_name, access_start_date, access_end_date
-          FROM {{ target.database }}.AUDIT.user_hospital_mapping
-        ) m
+      hospital_id IN (
+        SELECT m.hospital_id
+        FROM {{ target.database }}.AUDIT.user_hospital_mapping m
         WHERE m.user_name = CURRENT_USER()
-          AND m.mapped_hospital_id = hospital_id
           AND CURRENT_DATE() BETWEEN m.access_start_date AND m.access_end_date
       )
     ELSE FALSE

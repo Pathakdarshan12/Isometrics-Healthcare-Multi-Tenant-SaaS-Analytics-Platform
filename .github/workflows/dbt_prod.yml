@@ -42,7 +42,8 @@ jobs:
           cache: pip
 
       - name: Install dbt
-        run: pip install dbt-snowflake==1.11.0
+        # pin dbt-core: dbt-snowflake allows dbt-core>=1.10.0rc0, so pip would pick pre-release dbt v2
+        run: pip install dbt-core==1.11.2 dbt-snowflake==1.11.0
 
       - name: 🔧 Setup dbt profile (key-pair auth)
         env:

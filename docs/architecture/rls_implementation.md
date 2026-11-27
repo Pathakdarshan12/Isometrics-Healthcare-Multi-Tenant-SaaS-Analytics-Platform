@@ -75,14 +75,10 @@ CASE
   WHEN CURRENT_ROLE() LIKE 'HOSPITAL_%_ANALYST' AND CURRENT_ROLE() NOT LIKE '%_PHI_ANALYST' THEN
     hospital_id = REGEXP_REPLACE(CURRENT_ROLE(), 'HOSPITAL_(.*)_ANALYST', '\\1')
   WHEN CURRENT_ROLE() = 'HOSPITAL_ANALYST' THEN
-    EXISTS (
-      SELECT 1
-      FROM (
-        SELECT hospital_id AS mapped_hospital_id, user_name, access_start_date, access_end_date
-        FROM <db>.AUDIT.user_hospital_mapping
-      ) m
+    hospital_id IN (
+      SELECT m.hospital_id
+      FROM <db>.AUDIT.user_hospital_mapping m
       WHERE m.user_name = CURRENT_USER()
-        AND m.mapped_hospital_id = hospital_id
         AND CURRENT_DATE() BETWEEN m.access_start_date AND m.access_end_date
     )
   ELSE FALSE
@@ -92,22 +88,26 @@ END
 Role naming convention: `HOSPITAL_<hospital_id>_ANALYST`, e.g. hospital
 `HOSP_0001` → role `HOSPITAL_HOSP_0001_ANALYST`.
 
-#### Why the derived table in the mapping lookup
+#### How the mapping lookup is written
 
-Inside a subquery, an unqualified column name resolves to the subquery's tables
-first. So the obvious
+`hospital_id IN (SELECT m.hospital_id ...)` keeps the two `hospital_id`s apart
+by position: the policy argument is outside the subquery and the mapping column
+is qualified (`m.`) inside it.
 
-```sql
-WHERE m.hospital_id = hospital_id    -- ❌ both sides are m.hospital_id
-```
+Two forms to avoid. Both were tested on Snowflake:
 
-compares the mapping column with itself. It's always true, and any user with any
-active mapping sees every hospital. The original policy in this project had
-exactly this bug. Renaming the column inside a derived table
-(`mapped_hospital_id`) leaves the policy argument as the only thing
-`hospital_id` can refer to. The alternative is giving the policy argument a
-distinct name (e.g. `row_hospital_id`). That changes the policy signature, though,
-which requires detaching and recreating the policy everywhere it's attached.
+- **Derived table inside a correlated subquery**, e.g.
+  `EXISTS (SELECT 1 FROM (SELECT ... FROM mapping) m WHERE ...)`. Snowflake
+  rejects it at query time with *"Unsupported subquery type cannot be evaluated
+  inside ROW ACCESS POLICY"*. The policy still creates, so the error appears only
+  when a `HOSPITAL_ANALYST` queries.
+- **`EXISTS (... WHERE m.hospital_id = hospital_id)`**. This works: Snowflake
+  binds the unqualified name to the policy argument, and a user mapped to two
+  hospitals sees exactly those two. It is easy to misread as comparing the column
+  with itself, though, so prefer the `IN` form.
+
+Verified in dev: `HOSPITAL_ANALYST` mapped to `HOSP_0003` sees only `HOSP_0003`,
+and adding a `HOSP_0002` mapping adds exactly that hospital.
 
 ### Creating vs. updating the policy
 

@@ -88,16 +88,10 @@ CASE
   WHEN CURRENT_ROLE() LIKE 'HOSPITAL_%_ANALYST' AND CURRENT_ROLE() NOT LIKE '%_PHI_ANALYST' THEN
     hospital_id = REGEXP_REPLACE(CURRENT_ROLE(), 'HOSPITAL_(.*)_ANALYST', '\\1')
   WHEN CURRENT_ROLE() = 'HOSPITAL_ANALYST' THEN
-    EXISTS (
-      SELECT 1
-      FROM (
-        -- rename the column: an unqualified hospital_id inside a subquery binds
-        -- to the table's own column (always true), not the policy argument
-        SELECT hospital_id AS mapped_hospital_id, user_name, access_start_date, access_end_date
-        FROM AUDIT.user_hospital_mapping
-      ) m
+    hospital_id IN (                -- policy argument, outside the subquery
+      SELECT m.hospital_id          -- mapping column, qualified inside it
+      FROM AUDIT.user_hospital_mapping m
       WHERE m.user_name = CURRENT_USER()
-        AND m.mapped_hospital_id = hospital_id
         AND CURRENT_DATE() BETWEEN m.access_start_date AND m.access_end_date
     )
   ELSE FALSE   -- fail closed

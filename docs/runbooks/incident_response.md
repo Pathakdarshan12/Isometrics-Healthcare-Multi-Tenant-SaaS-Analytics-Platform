@@ -134,10 +134,10 @@ FROM TABLE(ISOMETRICS_PROD.INFORMATION_SCHEMA.POLICY_REFERENCES(
 -- Or check every staging/mart model at once:
 --   dbt test --target prod --select assert_rls_policy_applied
 
--- Verify the policy body is the current version. The mapping lookup must use the
--- derived-table form (mapped_hospital_id). An older body compared
--- m.hospital_id = hospital_id, which is always true and leaks every hospital
--- to HOSPITAL_ANALYST users.
+-- Verify the policy body is the current version: the mapping lookup should be
+-- `hospital_id IN (SELECT m.hospital_id FROM ...user_hospital_mapping m ...)`.
+-- A body with a derived table (mapped_hospital_id) errors for HOSPITAL_ANALYST
+-- users ("Unsupported subquery type").
 DESCRIBE ROW ACCESS POLICY ISOMETRICS_PROD.RAW_PHI.HOSPITAL_ISOLATION_POLICY;
 
 -- Check user-hospital mapping (only consulted for the HOSPITAL_ANALYST role)
@@ -154,7 +154,7 @@ Root cause checklist:
 | Finding | Root cause |
 |---|---|
 | No policy on an object | Policy dropped by a rebuild outside dbt, or a model missing the `apply_rls_policy()` post-hook |
-| Policy body lacks `mapped_hospital_id` | Outdated body. Rerun `setup_rls_policies` |
+| `HOSPITAL_ANALYST` queries fail with "Unsupported subquery type" | Outdated body (derived-table form). Rerun `setup_rls_policies` |
 | User holds a role for another hospital, or more than one hospital role | Grant error |
 | Multiple active mapping rows for `HOSPITAL_ANALYST` | Mapping error (intended only for multi-hospital users) |
 | A model filters on `CURRENT_ROLE()` | Code bypassing the policy (`assert_no_role_filters_in_models` should have failed CI) |

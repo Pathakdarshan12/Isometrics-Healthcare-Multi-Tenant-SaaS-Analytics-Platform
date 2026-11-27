@@ -14,6 +14,10 @@ jobs:
   dbt-ci:
     name: dbt CI Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # "Comment PR with results" step
+      issues: write
     env:
       CI_SCHEMA: dbt_ci_${{ github.event.pull_request.number || github.run_id }}
       # CI's own database holds only per-run schemas, so sources read dev raw data
@@ -30,7 +34,8 @@ jobs:
           cache: pip
 
       - name: Install dbt
-        run: pip install dbt-snowflake==1.11.0
+        # pin dbt-core: dbt-snowflake allows dbt-core>=1.10.0rc0, so pip would pick pre-release dbt v2
+        run: pip install dbt-core==1.11.2 dbt-snowflake==1.11.0
 
       - name: 🔧 Setup dbt profile (key-pair auth)
         env:
