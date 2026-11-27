@@ -6,6 +6,8 @@ import os
 from contextlib import contextmanager
 from dotenv import load_dotenv
 
+from utils.snowflake_auth import auth_params
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -44,8 +46,8 @@ class SnowflakeConnection:
         try:
             conn_params = {
                 'user': self.user,
-                'password': self.password,
-                'account': self.account
+                'account': self.account,
+                **auth_params(password=self.password),
             }
 
             # Add optional parameters only if they are provided

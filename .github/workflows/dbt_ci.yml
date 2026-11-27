@@ -5,44 +5,40 @@ on:
   pull_request:
     branches: [main]
 
+# One run per PR at a time: a new push cancels the previous run (cleanup still runs)
+concurrency:
+  group: dbt-ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   dbt-ci:
     name: dbt CI Tests
     runs-on: ubuntu-latest
     env:
       CI_SCHEMA: dbt_ci_${{ github.event.pull_request.number || github.run_id }}
-      # CI's own RAW_PHI schema is dropped after every run, so sources read dev raw data
+      # CI's own database holds only per-run schemas, so sources read dev raw data
       DBT_RAW_DATABASE: ISOMETRICS_DEV
 
     steps:
       - name: 📥 Checkout code
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install dbt
-        run: |
-          pip install dbt-snowflake==1.11.0
+        run: pip install dbt-snowflake==1.11.0
 
-      - name: Install SnowSQL
+      - name: 🔧 Setup dbt profile (key-pair auth)
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
         run: |
-          curl -sSLo snowsql.bash https://sfc-repo.snowflakecomputing.com/snowsql/bootstrap/1.2/linux_x86_64/snowsql-1.2.32-linux_x86_64.bash
-          SNOWSQL_DEST=~/bin SNOWSQL_LOGIN_SHELL=~/.profile bash snowsql.bash
-          echo "$HOME/bin" >> $GITHUB_PATH
-
-      - name: Verify SnowSQL installation
-        run: |
-          ~/bin/snowsql -v
-
-      - name: 🔧 Setup dbt profile
-        run: |
-          mkdir -p ~/.dbt
+          mkdir -p ~/.dbt ~/.snowflake
+          printf '%s\n' "$SNOWFLAKE_PRIVATE_KEY" > ~/.snowflake/rsa_key.p8
+          chmod 600 ~/.snowflake/rsa_key.p8
           cat <<EOF > ~/.dbt/profiles.yml
           isometrics_healthcare:
             target: ci
@@ -51,105 +47,45 @@ jobs:
                 type: snowflake
                 account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
                 user: ${{ secrets.SNOWFLAKE_USER }}
-                password: ${{ secrets.SNOWFLAKE_PASSWORD }}
+                private_key_path: $HOME/.snowflake/rsa_key.p8
                 role: DBT_CI_ROLE
                 database: ISOMETRICS_CI
                 warehouse: DBT_CI_WH
                 schema: ${{ env.CI_SCHEMA }}
                 threads: 4
+                query_tag: dbt_ci
           EOF
-
-      - name: 🔧 Setup CI environment
-        run: |
-          cd isometrics_healthcare
-          cat <<EOF > setup_ci.sql
-          -- Setup CI environment
-          USE ROLE DBT_CI_ROLE;
-          USE WAREHOUSE DBT_CI_WH;
-          USE DATABASE ISOMETRICS_CI;
-          
-          -- Create required schemas
-          CREATE SCHEMA IF NOT EXISTS RAW_PHI;
-          CREATE SCHEMA IF NOT EXISTS STAGING;
-          CREATE SCHEMA IF NOT EXISTS MARTS;
-          CREATE SCHEMA IF NOT EXISTS SNAPSHOTS;
-          CREATE SCHEMA IF NOT EXISTS AUDIT;
-          CREATE SCHEMA IF NOT EXISTS ${{ env.CI_SCHEMA }};
-          
-          -- Grant permissions
-          GRANT USAGE ON SCHEMA RAW_PHI TO ROLE DBT_CI_ROLE;
-          GRANT USAGE ON SCHEMA STAGING TO ROLE DBT_CI_ROLE;
-          GRANT USAGE ON SCHEMA MARTS TO ROLE DBT_CI_ROLE;
-          GRANT USAGE ON SCHEMA SNAPSHOTS TO ROLE DBT_CI_ROLE;
-          GRANT USAGE ON SCHEMA AUDIT TO ROLE DBT_CI_ROLE;
-          GRANT USAGE ON SCHEMA ${{ env.CI_SCHEMA }} TO ROLE DBT_CI_ROLE;
-          
-          -- Confirm setup
-          SELECT 'CI Environment Ready' as status;
-          EOF
-          
-          ~/bin/snowsql \
-            -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
-            -u ${{ secrets.SNOWFLAKE_USER }} \
-            -o log_level=DEBUG \
-            -f setup_ci.sql
-        env:
-          SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PASSWORD }}
 
       - name: Install dbt packages
-        run: |
-          cd isometrics_healthcare
-          dbt deps
-
-      - name: 🔒 Setup RLS policies (before dbt run)
-        run: |
-          cd isometrics_healthcare
-          dbt run-operation setup_rls_policies
+        run: cd isometrics_healthcare && dbt deps
 
       - name: dbt debug
-        run: |
-          cd isometrics_healthcare
-          dbt debug
+        run: cd isometrics_healthcare && dbt debug
 
-      - name: dbt compile
-        run: |
-          cd isometrics_healthcare
-          dbt compile
+      # Creates ISOMETRICS_CI.RAW_PHI/AUDIT, the policies and the CI test mappings
+      - name: 🔒 Setup RLS policies (before dbt run)
+        run: cd isometrics_healthcare && dbt run-operation setup_rls_policies
 
       - name: dbt run (staging)
-        run: |
-          cd isometrics_healthcare
-          dbt run --select staging
+        run: cd isometrics_healthcare && dbt run --select staging
 
       - name: dbt run (intermediate)
-        run: |
-          cd isometrics_healthcare
-          dbt run --select intermediate
+        run: cd isometrics_healthcare && dbt run --select intermediate
 
       - name: dbt run (marts)
-        run: |
-          cd isometrics_healthcare
-          dbt run --select marts
+        run: cd isometrics_healthcare && dbt run --select marts
 
       - name: dbt test (data quality)
-        run: |
-          cd isometrics_healthcare
-          dbt test --exclude assert_rls_column_exists assert_rls_policy_applied
+        run: cd isometrics_healthcare && dbt test --exclude assert_rls_column_exists assert_rls_policy_applied
 
       - name: Verify RLS policies
-        run: |
-          cd isometrics_healthcare
-          dbt test --select assert_rls_column_exists assert_rls_policy_applied
+        run: cd isometrics_healthcare && dbt test --select assert_rls_column_exists assert_rls_policy_applied
 
       - name: Verify data isolation
-        run: |
-          cd isometrics_healthcare
-          dbt test --select assert_no_cross_hospital_data_leakage assert_no_cross_hospital_encounters
+        run: cd isometrics_healthcare && dbt test --select assert_no_cross_hospital_data_leakage assert_no_cross_hospital_encounters
 
       - name: Generate dbt docs
-        run: |
-          cd isometrics_healthcare
-          dbt docs generate
+        run: cd isometrics_healthcare && dbt docs generate
 
       - name: Upload docs artifact
         if: success()
@@ -170,83 +106,14 @@ jobs:
             isometrics_healthcare/target/run_results.json
             isometrics_healthcare/logs/dbt.log
 
-      - name: 🧹 Remove RLS policies from CI tables
-        if: always()
-        run: |
-          cd isometrics_healthcare
-          cat <<EOF > remove_rls_policies.sql
-          USE ROLE DBT_CI_ROLE;
-          USE DATABASE ISOMETRICS_CI;
-          USE SCHEMA ${{ env.CI_SCHEMA }};
-          
-          -- Get all tables with RLS policies in CI schema
-          SET ci_schema_filter = '${{ env.CI_SCHEMA }}';
-          
-          -- Remove RLS policies from all tables in CI schema
-          DECLARE
-            policy_cursor CURSOR FOR
-              SELECT DISTINCT
-                ref_entity_name as table_name,
-                ref_entity_domain as object_type
-              FROM snowflake.account_usage.policy_references
-              WHERE ref_database_name = 'ISOMETRICS_CI'
-                AND ref_schema_name = \$ci_schema_filter
-                AND policy_kind = 'ROW_ACCESS_POLICY'
-                AND policy_status = 'ACTIVE'
-                AND deleted IS NULL;
-          BEGIN
-            FOR record IN policy_cursor DO
-              BEGIN
-                EXECUTE IMMEDIATE 'ALTER TABLE ISOMETRICS_CI.' || \$ci_schema_filter || '.' || record.table_name || ' DROP ROW ACCESS POLICY hospital_isolation_policy';
-                CALL SYSTEM\$LOG('INFO', 'Removed RLS policy from ' || record.table_name);
-              EXCEPTION
-                WHEN OTHER THEN
-                  CALL SYSTEM\$LOG('WARN', 'Failed to remove RLS policy from ' || record.table_name || ': ' || SQLERRM);
-              END;
-            END FOR;
-          END;
-          
-          SELECT 'RLS Policies Removed' as status;
-          EOF
-          
-          ~/bin/snowsql \
-            -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
-            -u ${{ secrets.SNOWFLAKE_USER }} \
-            -o log_level=DEBUG \
-            -f remove_rls_policies.sql || echo "RLS cleanup failed, continuing..."
-        env:
-          SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-
+      # Drops <CI_SCHEMA> and every <CI_SCHEMA>_* layer schema (detaching their policies)
       - name: 🧹 Cleanup CI schemas
         if: always()
-        run: |
-          cd isometrics_healthcare
-          cat <<EOF > cleanup_ci.sql
-          USE ROLE DBT_CI_ROLE;
-          USE DATABASE ISOMETRICS_CI;
-          
-          -- Drop all CI-related schemas
-          DROP SCHEMA IF EXISTS ${{ env.CI_SCHEMA }} CASCADE;
-          DROP SCHEMA IF EXISTS RAW_PHI CASCADE;
-          DROP SCHEMA IF EXISTS STAGING CASCADE;
-          DROP SCHEMA IF EXISTS MARTS CASCADE;
-          DROP SCHEMA IF EXISTS SNAPSHOTS CASCADE;
-          DROP SCHEMA IF EXISTS AUDIT CASCADE;
-          
-          SELECT 'Cleanup Complete' as status;
-          EOF
-          
-          ~/bin/snowsql \
-            -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
-            -u ${{ secrets.SNOWFLAKE_USER }} \
-            -o log_level=DEBUG \
-            -f cleanup_ci.sql || echo "Schema cleanup failed, continuing..."
-        env:
-          SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+        run: cd isometrics_healthcare && (dbt run-operation drop_ci_schemas || echo "CI schema cleanup failed, continuing...")
 
       - name: Comment PR with results
         if: github.event_name == 'pull_request' && failure()
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           script: |
             github.rest.issues.createComment({

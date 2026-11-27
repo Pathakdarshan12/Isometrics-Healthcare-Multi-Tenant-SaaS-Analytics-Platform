@@ -27,13 +27,14 @@ The project uses dbt's default `generate_schema_name`, so a model's schema is
 
 | Target (profile schema) | Staging | Marts | Snapshots |
 |---|---|---|---|
-| dev (`dbt_dev`) | `DBT_DEV_STAGING` | `DBT_DEV_MARTS` | `SNAPSHOTS` (`target_schema`) |
+| dev (`DBT_DEV`) | `DBT_DEV_STAGING` | `DBT_DEV_MARTS` | `SNAPSHOTS` (`target_schema`) |
 | ci (`dbt_ci_<run>`) | `DBT_CI_<run>_STAGING` | `DBT_CI_<run>_MARTS` | `SNAPSHOTS` |
-| prod (`marts`, from `dbt_prod.yml`) | `MARTS_STAGING` | `MARTS_MARTS` | `SNAPSHOTS` |
+| prod (`DBT_PROD`, from `dbt_prod.yml`) | `DBT_PROD_STAGING` | `DBT_PROD_MARTS` | `SNAPSHOTS` |
 
 Raw data always lives in `RAW_PHI`, in the database named by
 `DBT_RAW_DATABASE` (defaults to the target database). CI sets it to
-`ISOMETRICS_DEV` because CI's own `RAW_PHI` is dropped after every run.
+`ISOMETRICS_DEV` because CI's database holds only the per-run schemas (dropped by
+`dbt run-operation drop_ci_schemas` at the end of each run) and the policies.
 
 > The runbooks refer to the marts schema as `MARTS`. Substitute the actual name for
 > your target from the table above.

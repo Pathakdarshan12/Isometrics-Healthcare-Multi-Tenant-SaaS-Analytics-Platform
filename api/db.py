@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Protocol
 
 from api.config import IDENTIFIER, Settings
+from utils.snowflake_auth import auth_params
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class SnowflakeRepository:
         conn = self._connector.connect(
             account=s.snowflake_account,
             user=s.snowflake_user,
-            password=s.snowflake_password,
+            **auth_params(password=s.snowflake_password, private_key_path=s.snowflake_private_key_path),
             warehouse=s.snowflake_warehouse,
             database=s.database,
             schema=s.marts_schema,

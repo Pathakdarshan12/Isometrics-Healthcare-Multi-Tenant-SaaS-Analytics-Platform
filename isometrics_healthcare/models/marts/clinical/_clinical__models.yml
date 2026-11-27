@@ -54,7 +54,9 @@ models:
                 min_value: 0
                 max_value: 10
                 inclusive: true
-                severity: error
+              # safety signal for review, not a pipeline defect
+              config:
+                severity: warn
       - name: verification_rate_pct
         description: "Percentage of medications with barcode verification"
       - name: adverse_reaction_rate_pct

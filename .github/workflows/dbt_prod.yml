@@ -24,6 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    env:
+      # optional; the Slack steps are skipped when the secret is not set
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
       - name: 📥 Checkout code
@@ -41,15 +44,13 @@ jobs:
       - name: Install dbt
         run: pip install dbt-snowflake==1.11.0
 
-      - name: Install SnowSQL
+      - name: 🔧 Setup dbt profile (key-pair auth)
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PROD_PRIVATE_KEY }}
         run: |
-          curl -sSLo snowsql.bash https://sfc-repo.snowflakecomputing.com/snowsql/bootstrap/1.2/linux_x86_64/snowsql-1.2.32-linux_x86_64.bash
-          SNOWSQL_DEST=~/bin SNOWSQL_LOGIN_SHELL=~/.profile bash snowsql.bash
-          echo "$HOME/bin" >> $GITHUB_PATH
-
-      - name: 🔧 Setup dbt profile
-        run: |
-          mkdir -p ~/.dbt
+          mkdir -p ~/.dbt ~/.snowflake
+          printf '%s\n' "$SNOWFLAKE_PRIVATE_KEY" > ~/.snowflake/rsa_key.p8
+          chmod 600 ~/.snowflake/rsa_key.p8
           cat <<EOF > ~/.dbt/profiles.yml
           isometrics_healthcare:
             target: prod
@@ -58,38 +59,18 @@ jobs:
                 type: snowflake
                 account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
                 user: ${{ secrets.SNOWFLAKE_PROD_USER }}
-                password: ${{ secrets.SNOWFLAKE_PROD_PASSWORD }}
+                private_key_path: $HOME/.snowflake/rsa_key.p8
                 role: DBT_PROD_ROLE
                 database: ISOMETRICS_PROD
                 warehouse: DBT_PROD_WH
-                schema: marts
+                # layers build into DBT_PROD_STAGING / DBT_PROD_MARTS (like DBT_DEV_* in dev)
+                schema: DBT_PROD
                 threads: 8
+                query_tag: dbt_prod_deploy
           EOF
 
-      - name: 🔧 Verify production environment
-        run: |
-          cd isometrics_healthcare
-          cat <<EOF > verify_prod.sql
-          USE ROLE DBT_PROD_ROLE;
-          USE WAREHOUSE DBT_PROD_WH;
-          USE DATABASE ISOMETRICS_PROD;
-          
-          -- Verify schemas exist
-          SHOW SCHEMAS IN DATABASE ISOMETRICS_PROD;
-          
-          -- Verify RLS policies exist
-          SHOW ROW ACCESS POLICIES IN DATABASE ISOMETRICS_PROD;
-          
-          SELECT 'Production environment verified' as status;
-          EOF
-          
-          ~/bin/snowsql \
-            -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
-            -u ${{ secrets.SNOWFLAKE_PROD_USER }} \
-            -o log_level=INFO \
-            -f verify_prod.sql
-        env:
-          SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PROD_PASSWORD }}
+      - name: 🔧 Verify production connection
+        run: cd isometrics_healthcare && dbt debug
 
       - name: Install dbt packages
         run: |
@@ -100,11 +81,6 @@ jobs:
         run: |
           cd isometrics_healthcare
           dbt run-operation setup_rls_policies
-
-      - name: dbt compile
-        run: |
-          cd isometrics_healthcare
-          dbt compile
 
       - name: 🧪 Pre-deployment tests
         run: |
@@ -160,48 +136,11 @@ jobs:
             isometrics_healthcare/target/catalog.json
             isometrics_healthcare/target/run_results.json
 
-      - name: 📈 Query production metrics
-        run: |
-          cd isometrics_healthcare
-          cat <<EOF > prod_metrics.sql
-          USE ROLE DBT_PROD_ROLE;
-          USE DATABASE ISOMETRICS_PROD;
-          
-          -- Model row counts
-          SELECT 
-            table_schema,
-            table_name,
-            row_count,
-            bytes / (1024*1024*1024) as size_gb,
-            last_altered
-          FROM ISOMETRICS_PROD.INFORMATION_SCHEMA.TABLES
-          WHERE table_schema IN ('DBT_PROD_STAGING', 'DBT_PROD_MARTS')
-          ORDER BY row_count DESC;
-          
-          -- Mart table counts
-          SELECT 
-            'staging' as layer,
-            COUNT(*) as table_count
-          FROM ISOMETRICS_PROD.INFORMATION_SCHEMA.TABLES
-          WHERE table_schema = 'DBT_PROD_STAGING'
-          UNION ALL
-          SELECT 
-            'marts' as layer,
-            COUNT(*) as table_count
-          FROM ISOMETRICS_PROD.INFORMATION_SCHEMA.TABLES
-          WHERE table_schema = 'DBT_PROD_MARTS';
-          EOF
-          
-          ~/bin/snowsql \
-            -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
-            -u ${{ secrets.SNOWFLAKE_PROD_USER }} \
-            -o log_level=INFO \
-            -f prod_metrics.sql
-        env:
-          SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PROD_PASSWORD }}
+      - name: 📈 Report production object counts
+        run: cd isometrics_healthcare && dbt run-operation report_layer_counts
 
       - name: 🔔 Slack notification on success
-        if: success()
+        if: success() && env.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v1
         with:
           payload: |
@@ -217,11 +156,9 @@ jobs:
                 }
               ]
             }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: 🔔 Slack notification on failure
-        if: failure()
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v1
         with:
           payload: |
@@ -237,8 +174,6 @@ jobs:
                 }
               ]
             }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Upload logs on failure
         if: failure()

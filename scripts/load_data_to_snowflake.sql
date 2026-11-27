@@ -1,38 +1,33 @@
 -- ============================================
--- Load Healthcare Data into Snowflake
+-- Load the generated Parquet files into ISOMETRICS_DEV.RAW_PHI
 -- ============================================
-
+-- Prerequisites:
+--   scripts/isometrics_healthcare_snowflake_setup.sql  (tables, file format, stage)
+--   python data_generation/generate_data.py            (writes data_generation/parquet/)
+--   python -m utils.upload_files_to_stage              (PUT to @RAW_PHI.HEALTHCARE_DATA_STAGE/2023/)
+--
+-- COPY skips files it has already loaded (load metadata, 64 days). To reload after
+-- regenerating, TRUNCATE the raw tables first or you will get duplicate rows.
+USE ROLE ACCOUNTADMIN;
+USE WAREHOUSE DBT_DEV_WH;
 USE DATABASE ISOMETRICS_DEV;
 USE SCHEMA RAW_PHI;
-USE WAREHOUSE DBT_DEV_WH;
-USE ROLE ACCOUNTADMIN;
 
--- Create file format
-CREATE OR REPLACE FILE FORMAT healthcare_csv_format
-  TYPE = 'CSV'
-  FIELD_DELIMITER = ','
-  SKIP_HEADER = 1
-  NULL_IF = ('NULL', 'null', '', 'None')
-  EMPTY_FIELD_AS_NULL = TRUE
-  FIELD_OPTIONALLY_ENCLOSED_BY = '"'
-  TRIM_SPACE = TRUE;
-
-  -- Create Parquet file format
-CREATE OR REPLACE FILE FORMAT healthcare_parquet_format
-  TYPE = 'PARQUET'
-  COMPRESSION = 'SNAPPY'
-  BINARY_AS_TEXT = FALSE
-  TRIM_SPACE = TRUE
-  NULL_IF = ('NULL', 'null', '', 'None');
-
--- Create stage
+-- Created by the setup script; kept here (IF NOT EXISTS) so this file also runs standalone
+CREATE FILE FORMAT IF NOT EXISTS healthcare_parquet_format
+  TYPE = 'PARQUET' BINARY_AS_TEXT = FALSE TRIM_SPACE = TRUE NULL_IF = ('NULL', 'null', '', 'None');
 CREATE STAGE IF NOT EXISTS healthcare_data_stage
-  FILE_FORMAT = healthcare_csv_format
-  COMMENT = 'Staging area for healthcare CSV files';
+  FILE_FORMAT = healthcare_parquet_format
+  COMMENT = 'Landing area for generated healthcare files';
 
--- ============================================
--- LOAD DATA (Run after files are uploaded)
--- ============================================
+LIST @healthcare_data_stage/2023/;   -- expect 21 .parquet files
+
+-- Casts: the generator writes Parquet DATE (date32) and TIMESTAMP (microseconds,
+-- no time zone). Without USE_LOGICAL_TYPE, Snowflake surfaces timestamps as
+-- plain integers, and `::TIMESTAMP_NTZ` would read them as SECONDS (year 55,000,000+).
+-- So timestamps use TO_TIMESTAMP_NTZ(<micros>, 6) and dates use ::DATE (a DATE
+-- variant cannot be cast to TIMESTAMP_NTZ).
+
 -- ============================================
 -- LOAD PARQUET FILES INTO RAW TABLES
 -- ============================================
@@ -52,7 +47,7 @@ FROM (
         $1:region::VARCHAR(50) AS region,
         $1:emr_system::VARCHAR(100) AS emr_system,
         $1:contract_tier::VARCHAR(50) AS contract_tier,
-        $1:contract_start_date::TIMESTAMP_NTZ AS contract_start_date,
+        TO_TIMESTAMP_NTZ($1:contract_start_date::NUMBER, 6) AS contract_start_date,
         $1:is_active::BOOLEAN AS is_active,
         $1:teaching_hospital::BOOLEAN AS teaching_hospital,
         CURRENT_TIMESTAMP() AS _loaded_at,
@@ -85,7 +80,7 @@ FROM (
         $1:email_hash::VARCHAR(64) AS email_hash,
         $1:primary_language::VARCHAR(50) AS primary_language,
         $1:marital_status::VARCHAR(50) AS marital_status,
-        $1:first_encounter_date::TIMESTAMP_NTZ AS first_encounter_date,
+        TO_TIMESTAMP_NTZ($1:first_encounter_date::NUMBER, 6) AS first_encounter_date,
         CURRENT_TIMESTAMP() AS _loaded_at,
         METADATA$FILENAME AS _source_file
     FROM @healthcare_data_stage/2023/patients.parquet
@@ -131,7 +126,7 @@ FROM (
         $1:facility_type::VARCHAR(100) AS facility_type,
         $1:bed_capacity::NUMBER(10,0) AS bed_capacity,
         $1:is_active::BOOLEAN AS is_active,
-        $1:opened_date::TIMESTAMP_NTZ AS opened_date,
+        TO_TIMESTAMP_NTZ($1:opened_date::NUMBER, 6) AS opened_date,
         CURRENT_TIMESTAMP() AS _loaded_at,
         METADATA$FILENAME AS _source_file
     FROM @healthcare_data_stage/2023/facilities.parquet
@@ -203,8 +198,8 @@ FROM (
         $1:patient_id::VARCHAR(50) AS patient_id,
         $1:provider_id::VARCHAR(50) AS provider_id,
         $1:facility_id::VARCHAR(50) AS facility_id,
-        $1:admission_date::TIMESTAMP_NTZ AS admission_date,
-        $1:discharge_date::TIMESTAMP_NTZ AS discharge_date,
+        TO_TIMESTAMP_NTZ($1:admission_date::NUMBER, 6) AS admission_date,
+        TO_TIMESTAMP_NTZ($1:discharge_date::NUMBER, 6) AS discharge_date,
         $1:length_of_stay::NUMBER(10,2) AS length_of_stay,
         $1:encounter_type::VARCHAR(50) AS encounter_type,
         $1:admission_source::VARCHAR(100) AS admission_source,
@@ -214,7 +209,7 @@ FROM (
         $1:is_readmission::BOOLEAN AS is_readmission,
         CURRENT_TIMESTAMP() AS _loaded_at,
         METADATA$FILENAME AS _source_file,
-        $1:_source_updated_at::TIMESTAMP_NTZ AS _source_updated_at
+        TO_TIMESTAMP_NTZ($1:_source_updated_at::NUMBER, 6) AS _source_updated_at
     FROM @healthcare_data_stage/2023/encounters.parquet
 )
 FILE_FORMAT = healthcare_parquet_format
@@ -233,7 +228,7 @@ FROM (
         $1:encounter_id::VARCHAR(50) AS encounter_id,
         $1:patient_id::VARCHAR(50) AS patient_id,
         $1:payer_id::VARCHAR(50) AS payer_id,
-        $1:transaction_date::TIMESTAMP_NTZ AS transaction_date,
+        TO_TIMESTAMP_NTZ($1:transaction_date::NUMBER, 6) AS transaction_date,
         $1:charge_amount::NUMBER(12,2) AS charge_amount,
         $1:payment_amount::NUMBER(12,2) AS payment_amount,
         $1:adjustment_amount::NUMBER(12,2) AS adjustment_amount,
@@ -272,7 +267,7 @@ FROM (
         $1:door_to_needle_minutes::INTEGER,
         $1:metric_component::VARCHAR(100),
         $1:component_value::VARCHAR(500),
-        $1:component_timestamp::TIMESTAMP_NTZ,
+        TO_TIMESTAMP_NTZ($1:component_timestamp::NUMBER, 6),
         $1:compliance_flag::BOOLEAN,
         $1:reporting_quarter::VARCHAR(10),
         $1:reporting_year::INTEGER,
@@ -389,7 +384,7 @@ FROM (
         $1:hospital_id::VARCHAR(50),
         $1:encounter_id::VARCHAR(50),
         $1:patient_id::VARCHAR(50),
-        $1:measurement_datetime::TIMESTAMP_NTZ,
+        TO_TIMESTAMP_NTZ($1:measurement_datetime::NUMBER, 6),
         $1:temperature_f::NUMBER(5,2),
         $1:heart_rate_bpm::INTEGER,
         $1:respiratory_rate::INTEGER,
@@ -424,9 +419,9 @@ FROM (
         $1:order_code::VARCHAR(20),
         $1:order_description::VARCHAR(500),
         $1:order_status::VARCHAR(50),
-        $1:order_datetime::TIMESTAMP_NTZ,
-        $1:scheduled_datetime::TIMESTAMP_NTZ,
-        $1:completed_datetime::TIMESTAMP_NTZ,
+        TO_TIMESTAMP_NTZ($1:order_datetime::NUMBER, 6),
+        TO_TIMESTAMP_NTZ($1:scheduled_datetime::NUMBER, 6),
+        TO_TIMESTAMP_NTZ($1:completed_datetime::NUMBER, 6),
         $1:priority::VARCHAR(20),
         $1:ordering_provider_id::VARCHAR(50),
         $1:performing_location::VARCHAR(100),
@@ -436,7 +431,7 @@ FROM (
         $1:frequency::VARCHAR(50),
         $1:duration_days::INTEGER,
         $1:specimen_type::VARCHAR(100),
-        $1:collection_datetime::TIMESTAMP_NTZ,
+        TO_TIMESTAMP_NTZ($1:collection_datetime::NUMBER, 6),
         $1:result_id::VARCHAR(50),
         CURRENT_TIMESTAMP(),
         METADATA$FILENAME
@@ -467,9 +462,9 @@ FROM (
         $1:reference_range_low::NUMBER(18,4),
         $1:reference_range_high::NUMBER(18,4),
         $1:abnormal_flag::VARCHAR(10),
-        $1:result_datetime::TIMESTAMP_NTZ,
-        $1:collected_datetime::TIMESTAMP_NTZ,
-        $1:resulted_datetime::TIMESTAMP_NTZ,
+        TO_TIMESTAMP_NTZ($1:result_datetime::NUMBER, 6),
+        TO_TIMESTAMP_NTZ($1:collected_datetime::NUMBER, 6),
+        TO_TIMESTAMP_NTZ($1:resulted_datetime::NUMBER, 6),
         $1:result_status::VARCHAR(50),
         $1:performing_lab::VARCHAR(100),
         $1:interpreting_provider_id::VARCHAR(50),
@@ -496,8 +491,8 @@ FROM (
         $1:medication_name::VARCHAR(255),
         $1:dose::VARCHAR(50),
         $1:route::VARCHAR(50),
-        $1:scheduled_datetime::TIMESTAMP_NTZ,
-        $1:administered_datetime::TIMESTAMP_NTZ,
+        TO_TIMESTAMP_NTZ($1:scheduled_datetime::NUMBER, 6),
+        TO_TIMESTAMP_NTZ($1:administered_datetime::NUMBER, 6),
         $1:administered_by_provider_id::VARCHAR(50),
         $1:administration_status::VARCHAR(50),
         $1:refusal_reason::VARCHAR(255),
@@ -527,10 +522,10 @@ FROM (
         $1:reaction_type::VARCHAR(100),
         $1:severity::VARCHAR(50),
         $1:allergy_status::VARCHAR(50),
-        $1:onset_date::TIMESTAMP_NTZ::DATE,
-        $1:resolution_date::TIMESTAMP_NTZ::DATE,
+        $1:onset_date::DATE,
+        $1:resolution_date::DATE,
         $1:documented_by_provider_id::VARCHAR(50),
-        $1:documentation_date::TIMESTAMP_NTZ::DATE,
+        $1:documentation_date::DATE,
         $1:clinical_notes::VARCHAR,
         CURRENT_TIMESTAMP()
     FROM @healthcare_data_stage/2023/patient_allergies.parquet
@@ -550,14 +545,14 @@ FROM (
         $1:diagnosis_code::VARCHAR(20),
         $1:diagnosis_description::VARCHAR(500),
         $1:problem_status::VARCHAR(50),
-        $1:onset_date::TIMESTAMP_NTZ::DATE,
-        $1:resolution_date::TIMESTAMP_NTZ::DATE,
-        $1:last_reviewed_date::TIMESTAMP_NTZ::DATE,
+        $1:onset_date::DATE,
+        $1:resolution_date::DATE,
+        $1:last_reviewed_date::DATE,
         $1:severity::VARCHAR(50),
         $1:is_chronic::BOOLEAN,
         $1:is_primary_diagnosis::BOOLEAN,
         $1:documented_by_provider_id::VARCHAR(50),
-        $1:documentation_date::TIMESTAMP_NTZ::DATE,
+        $1:documentation_date::DATE,
         $1:clinical_notes::VARCHAR,
         CURRENT_TIMESTAMP()
     FROM @healthcare_data_stage/2023/problem_list.parquet
@@ -580,8 +575,8 @@ FROM (
         $1:subscriber_id::VARCHAR(100),
         $1:subscriber_name::VARCHAR(255),
         $1:subscriber_relationship::VARCHAR(50),
-        $1:effective_date::TIMESTAMP_NTZ::DATE,
-        $1:termination_date::TIMESTAMP_NTZ::DATE,
+        $1:effective_date::DATE,
+        $1:termination_date::DATE,
         $1:coverage_status::VARCHAR(50),
         $1:plan_type::VARCHAR(50),
         $1:coverage_level::VARCHAR(50),
@@ -608,7 +603,7 @@ FROM (
         $1:hospital_id::VARCHAR(50),
         $1:patient_id::VARCHAR(50),
         $1:encounter_id::VARCHAR(50),
-        $1:screening_date::TIMESTAMP_NTZ::DATE,
+        $1:screening_date::DATE,
         $1:housing_status::VARCHAR(50),
         $1:housing_concerns::BOOLEAN,
         $1:food_insecurity_flag::BOOLEAN,
@@ -659,7 +654,6 @@ ORDER BY table_name;
 SELECT
     TABLE_NAME,
     STATUS,
-    FIRST_ERROR_MESSAGE
     FILE_NAME,
     ROW_COUNT,
     ROW_PARSED,

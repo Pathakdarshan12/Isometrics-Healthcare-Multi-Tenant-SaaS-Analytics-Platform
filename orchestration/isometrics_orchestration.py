@@ -59,8 +59,12 @@ def _cast(name: str, col_type: str) -> str:
     if name == '_source_file':
         return 'METADATA$FILENAME'
     upper = col_type.upper()
+    # Parquet from schema.py: DATE = date32 -> variant DATE; TIMESTAMP = int64 microseconds
+    # (no logical type without USE_LOGICAL_TYPE), which ::TIMESTAMP_NTZ would read as seconds.
     if upper == 'DATE':
-        return f'$1:{name}::TIMESTAMP_NTZ::DATE'
+        return f'$1:{name}::DATE'
+    if upper.startswith('TIMESTAMP'):
+        return f'TO_TIMESTAMP_NTZ($1:{name}::NUMBER, 6)'
     if upper == 'TEXT':
         return f'$1:{name}::VARCHAR'
     return f'$1:{name}::{col_type}'

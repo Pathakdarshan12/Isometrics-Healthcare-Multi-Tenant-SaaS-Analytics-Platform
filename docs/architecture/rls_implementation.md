@@ -30,9 +30,15 @@ All created per database by `dbt run-operation setup_rls_policies`
 | `<db>.RAW_PHI.PHI_ACCESS_POLICY` | Stricter policy for raw PHI tables (`HOSPITAL_<ID>_PHI_ANALYST`, PHI admins, auditors) |
 | `<db>.AUDIT.user_hospital_mapping` | Per-user, time-boxed hospital grants for the generic `HOSPITAL_ANALYST` role |
 
-`scripts/create_rls_policies.sql` is the one-time ACCOUNTADMIN version for dev
-(it also attaches `PHI_ACCESS_POLICY` to the raw tables and creates example
-hospital roles).
+`scripts/create_rls_policies.sql` (ACCOUNTADMIN, run after `setup_rls_policies`)
+does not define policies. It attaches these same policies to the raw tables
+(`PHI_ACCESS_POLICY` on `raw_patients`, hospital isolation on the other tenant
+tables) in every database where they exist, and creates the example
+`HOSPITAL_<ID>_ANALYST`, `HOSPITAL_ANALYST` and `HIPAA_AUDITOR` roles. Because the
+policies also sit on the raw tables, a staging view returns no rows to a role the
+raw policy rejects: for example, a non-PHI analyst sees no rows in
+`stg_healthcare__patients`. Marts are tables built by the dbt role, so this does
+not affect them.
 
 ### Mapping table
 
