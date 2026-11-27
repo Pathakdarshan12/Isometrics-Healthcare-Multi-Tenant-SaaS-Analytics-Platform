@@ -788,6 +788,14 @@ uvicorn api.main:app --reload
 
 ## **Documentation**
 
+Architecture:
+- [Data model](docs/architecture/data_model.md): layers, source tables, marts and their grains, schema naming
+- [Row-level security](docs/architecture/rls_implementation.md): policies, the `apply_rls_policy` hook, verification tests
+- [Materialization & incremental strategy](docs/architecture/incremental_strategy.md)
+- [Ingestion](docs/architecture/metadata_driven_ingestion.md): COPY load path and the metadata-driven procedures
+
+Runbooks: [tenant onboarding](docs/runbooks/%20tenant_onboarding.md) · [tenant offboarding](docs/runbooks/tenant_offboarding.md) · [backfill](docs/runbooks/backfill_tenant.md) · [incident response](docs/runbooks/incident_response.md)
+
 - **dbt Docs**: Run `dbt docs generate && dbt docs serve`
 - **Model Lineage**: Interactive DAG visualization
 - **Column-Level Descriptions**: Every column documented

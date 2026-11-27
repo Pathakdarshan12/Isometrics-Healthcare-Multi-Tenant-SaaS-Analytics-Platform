@@ -83,7 +83,7 @@ Layer defaults (materialization, schema, tags, `meta.sla_hours`) are set in `dbt
 - Access control lives only in row access policies, never in `WHERE CURRENT_ROLE() ...` filters inside models (those silently empty CI/prod builds).
 - Every model must carry `hospital_id`; generic test `has_tenant_column` and singular `assert_rls_column_exists` enforce this.
 - Staging and mart models attach RLS with `post_hook=["{{ apply_rls_policy() }}"]`. The macro checks `INFORMATION_SCHEMA.POLICY_REFERENCES`, skips if already attached (incremental tables persist), uses `ALTER VIEW` vs `ALTER TABLE` by materialization, and errors if a different policy is attached. The policy must exist first (`setup_rls_policies`).
-- `assert_rls_policy_applied` builds its check list from the dbt graph (all staging/marts models except `staging/reference`), so new models are covered automatically.
+- `assert_rls_policy_applied` and `assert_rls_column_exists` build their check lists from the dbt graph (all staging/marts models except `staging/reference`), so new models are covered automatically. Never hard-code schema names in tests: dbt builds into `<target schema>_<layer>` (e.g. `DBT_DEV_MARTS`).
 - Policy bodies are in `rls_hospital_isolation_body()` / `rls_phi_access_body()` in `macros/setup_rls_policies.sql`; `setup_rls_policies` creates-if-missing then `ALTER ... SET BODY`, so edit the body there and rerun. In a policy subquery, never compare `table.hospital_id = hospital_id` — the unqualified name binds to the table column, not the policy argument (see the derived-table pattern used there).
 - Joins and window partitions across tenant-scoped entities must include `hospital_id`; `no_cross_tenant_leakage` (generic) and `assert_no_cross_hospital_*` (singular) check this.
 - Flag PHI with `meta: {contains_phi: true, phi_fields: [...]}`; use `no_phi_in_column` on free-text columns. Staging applies HIPAA Safe Harbor: birth year only, ages top-coded at 90, `deidentify_zipcode` (3 digits, restricted prefixes → `000`).
@@ -103,6 +103,10 @@ Write macro docstrings as Jinja comments (`{# #}`), never SQL `/* */`: Jinja ren
 `monitoring_dashboard/app.py` (Streamlit, multi-page with `pages/`) queries mart tables directly via `snowflake.connector` using `.env` creds (tables hard-coded to `DBT_DEV_MARTS`); the role in `.env` determines what RLS lets it see.
 
 `api/` (FastAPI) never filters tenants itself: each API key (stored as a SHA-256 digest in `ISOMETRICS_API_KEYS`) is bound to one Snowflake role, and `api/db.py` runs `USE ROLE` for it per request with secondary roles disabled, so the row access policy decides visibility. Only datasets in `api/datasets.py` (aggregate marts) are queryable; table names come from that whitelist and all user input is bound as parameters. Tests inject a fake repository via `app.state.repository` and override `get_settings`.
+
+## Docs
+
+`docs/architecture/` (data model, RLS, incremental strategy, ingestion) and `docs/runbooks/` describe the system as built. Update them when changing RLS, materializations, load paths or schema naming. `docs/blog.md` is a personal article, not reference documentation.
 
 ## Known pitfalls
 - Readmissions are defined in `stg_healthcare__encounters` (previous *inpatient* stay at the same hospital, 1–30 days); `assert_readmission_logic_valid` recomputes this independently with a self-join, so change both together.
