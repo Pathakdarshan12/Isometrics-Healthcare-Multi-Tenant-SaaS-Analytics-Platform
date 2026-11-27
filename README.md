@@ -10,7 +10,7 @@ It tackles the problems a real hospital analytics platform has to solve:
 
 - **Multi-tenant data isolation** with Row-Level Security (RLS)
 - **HIPAA audit trail** built from Snowflake query and access history
-- **SLA monitoring** of data freshness and quality
+- **Scheduled pipeline** every 3 hours (generate → load → `dbt build`) with a 4-hour freshness SLA, monitored per hospital
 - **Clinical quality analytics** (30-day readmission rates, mortality tracking, early warning scores)
 - **Cost attribution** per hospital from Snowflake query history
 - **Population health management** with SDOH screening integration
@@ -197,7 +197,7 @@ coalesce(
 
 ### **5. Real Production Data Generation**
 
-`data_generation/generate_data.py` (~1,350 lines, plus ~700 lines of medical code libraries) generates correlated synthetic data for all 18 healthcare source tables:
+`data_generation/generate_data.py` is a vectorized, streaming generation engine (NumPy + PyArrow) for all 21 raw tables. It produced **3M encounters / 104M rows across 100 hospitals in about 5 minutes at under 500 MB of RAM** (measured; see [Data Generation](#data-generation--loading)):
 
 ```python
 class HealthcareDataGenerator:
@@ -546,6 +546,29 @@ These implement **actual clinical guidelines** from medical literature.
 
 ---
 
+## **Scheduled Pipeline**
+
+`orchestration/isometrics_orchestration.py` runs one end-to-end batch, and `.github/workflows/pipeline_schedule.yml` runs it **every 3 hours** against production. A 3-hour cadence keeps every transactional source inside the 4-hour freshness warning (`dbt source freshness`, error at 6 hours), with slack for scheduler delays.
+
+Each run:
+1. Takes the 3-hour window ending at the current UTC hour
+2. Skips generate/load if that window is already in `RAW_PHI` (safe to retry)
+3. Generates the window's encounters plus billing, vitals, orders, results, medication administration, quality measures, care plans, referrals and prior authorizations for the tenants already in Snowflake (`data_generation/daily_data_generation.py`). IDs embed the batch tag and generation is deterministic per window, so batches never collide and reruns reproduce the same files.
+4. Uploads to `@RAW_PHI.HEALTHCARE_DATA_STAGE/batches/<tag>/` and `COPY`s into the raw tables (columns and casts derived from the raw DDL)
+5. Runs `setup_rls_policies` → `dbt source freshness` → `dbt build` (models, all tests, snapshots)
+6. Records the run in `AUDIT.PIPELINE_RUN_LOG` (window, rows loaded per table, status, duration, error)
+
+```bash
+python -m orchestration.isometrics_orchestration --target dev               # one run against dev
+python -m orchestration.isometrics_orchestration --target dev --skip-dbt    # load only
+python -m orchestration.isometrics_orchestration --target dev --dbt-only    # transform only
+python -m pytest orchestration/tests                                        # offline tests
+```
+
+The schedule is **off until** the repository variable `PIPELINE_ENABLED` is set to `true`. Manual runs (`workflow_dispatch`) always work. The first run needs the master data (hospitals, patients, providers, facilities, payers) already loaded via the Quick Start. Pipeline runs and production deploys share a concurrency group, so they never overlap.
+
+---
+
 ## **Analytics API (FastAPI)**
 
 `api/` is a read-only REST API over the aggregate marts.
@@ -632,20 +655,39 @@ All test steps are blocking. `.github/workflows/dbt_prod.yml` deploys to `ISOMET
 
 ### **Generate Synthetic Data**
 ```bash
-# run from the repo root
-python data_generation/generate_data.py
-# Creates 21 CSV files in data_generation/2025/
+# run from the repo root; writes data_generation/parquet/<table>.parquet + generation_report.json
+python data_generation/generate_data.py                               # 100 hospitals, 30 days
+python data_generation/generate_data.py --target-encounters 3000000   # sizes the date range (~236 days)
+python data_generation/generate_data.py --hospitals 10 --days 7 --format both   # Parquet + CSV
+python -m pytest data_generation/tests                                # integrity tests
 ```
 
-**Output**: 50 hospitals across 3 types (10 academic medical centers, 25 community, 15 rural), each with its own patients, providers and facilities, plus 3 reference tables. Daily encounter volume depends on hospital type (10-500/day), so total volume scales with the date range set in `main()`. Clinical, financial, quality, care-coordination and prior-authorization tables are derived from those encounters so diagnoses, timings and outcomes correlate (e.g. sepsis encounters get SEP-1 measure records, AMI encounters get door-to-balloon times).
+**Design:**
+- **Vectorized:** fields are drawn as NumPy arrays; variable child counts (vitals per encounter, orders per encounter, administrations per order) expand with `np.repeat`, not Python loops.
+- **Streaming:** patients and encounters are generated in batches. Each batch's dependent tables are written immediately (PyArrow `ParquetWriter`, optional CSV append) and released. `--batch-size` caps the rows per batch *including* child tables, and encounters per batch adapt to the measured fan-out, so memory stays flat as volume grows.
+- **Tenant-consistent:** every patient, provider and facility reference is sampled from the row's own hospital.
+- **Reproducible:** one `--seed` reproduces the dataset.
+- **Schema-exact:** output is conformed to the raw DDL (`data_generation/schema.py`), and the writer fails on schema drift.
+
+**Measured** (100 hospitals, `--target-encounters 3000000`, default batch size, Parquet):
+
+| | |
+|---|---|
+| Encounters | 3,011,896 over 236 days |
+| Total rows (21 tables) | 103.9M, including 41.9M medication administrations, 25.4M orders, 13.2M vitals, 10.1M results, 1.23M patients |
+| Wall time | 5 min 3 s (~343k rows/s end to end) |
+| Peak RAM | 462 MB |
+| Output | 3.8 GB Parquet |
+| Integrity | 0 cross-tenant references, 0 orphaned child rows, 6.3% inpatient 30-day readmission rate |
+
+At the same small configuration (10 hospitals, 7 days, ~0.97M rows), the previous row-by-row generator took 149 s at 814 MB; this engine takes about 4 s at 274 MB.
+
+Clinical, financial, quality, care-coordination and prior-authorization tables are derived from the encounters, so diagnoses, timings and outcomes correlate (e.g. sepsis encounters get SEP-1 measure records, AMI encounters get door-to-balloon times).
 
 ### **Load to Snowflake**
 
 ```bash
-# Convert CSV to Parquet -> data_generation/parquet/
-python utils/csv_to_parquet.py
-
-# Upload to the stage (@RAW_PHI.HEALTHCARE_DATA_STAGE/2023/), creds from .env
+# Upload the generated Parquet to the stage (@RAW_PHI.HEALTHCARE_DATA_STAGE/2023/), creds from .env
 python -m utils.upload_files_to_stage
 
 # Load all 21 raw tables
@@ -709,9 +751,10 @@ snowsql -f scripts/load_data_to_snowflake.sql
 | **Custom Macros** | 30+           |
 | **Snapshots** | 3 (SCD Type 2)    |
 | **Clinical Algorithms** | 8 (APACHE II, SOFA, qSOFA, MEWS, NEWS2, CHA₂DS₂-VASc, HAS-BLED, Charlson) |
-| **Synthetic Data Generator** | ~1,350 lines (+ ~700 lines of code libraries) |
+| **Synthetic Data Generator** | Vectorized streaming engine: 3M encounters / 104M rows in ~5 min, <500 MB RAM |
 | **Monitoring Dashboard** | ~2,800 lines  |
 | **Analytics API** | FastAPI, 10 datasets, offline test suite |
+| **Scheduled Pipeline** | every 3 hours, 10 transactional feeds, 4-hour freshness SLA |
 | **Documentation** | 10,000+ words |
 
 ---
@@ -766,8 +809,7 @@ SNOWFLAKE_SCHEMA=RAW_PHI
 EOF
 
 # 5. Generate and load data (from the repo root)
-python data_generation/generate_data.py
-python utils/csv_to_parquet.py
+python data_generation/generate_data.py          # Parquet -> data_generation/parquet/
 python -m utils.upload_files_to_stage
 snowsql -f scripts/load_data_to_snowflake.sql
 

@@ -1,298 +1,169 @@
 """
-Lightweight Daily Healthcare Data Generator
-Generates data for a single day and saves as Parquet files
+Incremental batch generator for the scheduled pipeline.
+
+Generates one time window of *transactional* data for the tenants that already
+exist in Snowflake: encounters plus everything derived from them (billing,
+vitals, orders, results, medication administration, quality measures, care
+plans, referrals, prior authorizations). Master data (hospitals, patients,
+providers, facilities, allergies, problem lists, coverage, SDOH) is created
+once by generate_data.py and only read here.
+
+Guarantees the scheduled pipeline relies on:
+- Tenant-consistent: every encounter uses a patient, provider and facility of
+  its own hospital (staging drops anything else).
+- Collision-free IDs: primary keys embed the batch tag (window end, UTC hour),
+  e.g. ENC_2026112715_0000001, so batches never overwrite earlier rows.
+- Deterministic per window: the same window always produces the same data, so
+  a retried run re-uploads identical files and COPY skips them.
+
+Usage (from the repo root; reference data is read from Snowflake via .env):
+    python data_generation/daily_data_generation.py --hours 3
+    python data_generation/daily_data_generation.py --window-end 2026-11-27T15:00 --hours 3
+The orchestrator (orchestration/isometrics_orchestration.py) calls generate_batch().
 """
+from __future__ import annotations
 
-import pandas as pd
-import numpy as np
-from faker import Faker
-from datetime import datetime, timedelta
-import random
-import os
-import hashlib
 import argparse
+import hashlib
+import os
+import re
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
-# Reproducible results
-np.random.seed(42)
-Faker.seed(42)
-fake = Faker()
+import numpy as np
+import pandas as pd
 
-class DailyHealthcareDataGenerator:
-    """Generates healthcare data for a single day"""
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from generate_data import HealthcareDataGenerator  # noqa: E402
+from medical_codes_library import HOSPITAL_DISTRIBUTION  # noqa: E402
+from schema import write_tables  # noqa: E402
 
-    def __init__(self, target_date: str):
-        self.target_date = pd.to_datetime(target_date)
-        self.output_dir = 'data_generation/parquet'
-        os.makedirs(self.output_dir, exist_ok=True)
-
-        print(f"🗓️  Loading data: ")
-
-        # Initialize all reference data attributes
-        self.hospitals = pd.DataFrame()
-        self.providers = pd.DataFrame()
-        self.facilities = pd.DataFrame()
-        self.diagnoses = pd.DataFrame()
-        self.payers = pd.DataFrame()
-
-        hosp_file = os.path.join(self.output_dir, 'hospitals.parquet')
-        if os.path.exists(hosp_file):
-            self.hospitals = pd.read_parquet(hosp_file)
-            print(f"  ✓ Loaded {len(self.hospitals)} hospitals")
-
-        prov_file = os.path.join(self.output_dir, 'providers.parquet')
-        if os.path.exists(prov_file):
-            self.providers = pd.read_parquet(prov_file)
-            print(f"  ✓ Loaded {len(self.providers)} providers")
-
-        fac_file = os.path.join(self.output_dir, 'facilities.parquet')
-        if os.path.exists(fac_file):
-            self.facilities = pd.read_parquet(fac_file)
-            print(f"  ✓ Loaded {len(self.facilities)} facilities")
-
-        diag_file = os.path.join(self.output_dir, 'diagnoses.parquet')
-        if os.path.exists(diag_file):
-            self.diagnoses = pd.read_parquet(diag_file)
-            print(f"  ✓ Loaded {len(self.diagnoses)} diagnoses")
-
-        payer_file = os.path.join(self.output_dir, 'payers.parquet')
-        if os.path.exists(payer_file):
-            self.payers = pd.read_parquet(payer_file)
-            print(f"  ✓ Loaded {len(self.payers)} payers")
-
-        # Validate required reference data exists
-        if self.hospitals.empty or self.providers.empty or self.facilities.empty or \
-           self.diagnoses.empty or self.payers.empty:
-            raise ValueError("Missing required reference data. Please ensure all reference tables exist.")
-
-    def generate_daily_encounters(self):
-        """Generate encounters for the target date"""
-        encounters = []
-        encounter_id = self._get_next_encounter_id()
-
-        for _, hospital in self.hospitals.iterrows():
-            # Calculate number of encounters for this hospital today
-            num_encounters = random.randint(
-                5,                  # minimum
-                hospital['bed_count']  # max
-            )
-
-            # Get providers for this hospital
-            hosp_providers = self.providers[
-                self.providers['hospital_id'] == hospital['hospital_id']
-            ]
-
-            # Get facilities for this hospital
-            hosp_facilities = self.facilities[
-                self.facilities['hospital_id'] == hospital['hospital_id']
-            ]
-
-            if len(hosp_providers) == 0 or len(hosp_facilities) == 0:
-                continue
-
-            for _ in range(num_encounters):
-                # Random encounter type
-                enc_type = random.choices(
-                    ['Inpatient', 'Outpatient', 'Emergency', 'Observation'],
-                    weights=[0.20, 0.50, 0.25, 0.05]
-                )[0]
-
-                # Random time today
-                hour = random.randint(0, 23)
-                minute = random.randint(0, 59)
-                admission_dt = self.target_date + timedelta(hours=hour, minutes=minute)
-
-                # Length of stay
-                if enc_type == 'Inpatient':
-                    los = max(1, int(np.random.lognormal(1.2, 0.8)))
-                elif enc_type == 'Observation':
-                    los = random.choice([0, 1])
-                else:
-                    los = 0
-
-                discharge_dt = admission_dt + timedelta(days=los, hours=random.randint(0, 23))
-
-                # Random provider and facility
-                provider = hosp_providers.sample(1).iloc[0]
-                facility = hosp_facilities.sample(1).iloc[0]
-                diagnosis = self.diagnoses.sample(1).iloc[0]
-
-                # Charges
-                if enc_type == 'Inpatient':
-                    charges = round(random.uniform(2000, 5000) * max(los, 1), 2)
-                elif enc_type == 'Emergency':
-                    charges = round(random.uniform(500, 3000), 2)
-                elif enc_type == 'Observation':
-                    charges = round(random.uniform(1000, 2500), 2)
-                else:
-                    charges = round(random.uniform(100, 800), 2)
-
-                encounters.append({
-                    'encounter_id': f'ENC_{encounter_id:012d}',
-                    'hospital_id': hospital['hospital_id'],
-                    'patient_id': f'PAT_{random.randint(1, 100000):010d}',
-                    'provider_id': provider['provider_id'],
-                    'facility_id': facility['facility_id'],
-                    'admission_date': admission_dt,
-                    'discharge_date': discharge_dt,
-                    'length_of_stay': los,
-                    'encounter_type': enc_type,
-                    'admission_source': random.choice(['Emergency', 'Elective', 'Transfer']),
-                    'discharge_disposition': random.choice(['Home', 'SNF', 'Rehab', 'Deceased']),
-                    'primary_diagnosis_code': diagnosis['diagnosis_code'],
-                    'total_charges': charges,
-                    'is_readmission': random.random() < 0.05,
-                    '_source_updated_at': self.target_date
-                })
-                encounter_id += 1
-
-        return pd.DataFrame(encounters)
-
-    def _get_next_encounter_id(self):
-        """Get next encounter ID from existing data"""
-        enc_pattern = os.path.join(self.output_dir, 'encounters_*.parquet')
-        import glob
-        existing_files = glob.glob(enc_pattern)
-
-        if not existing_files:
-            return 1
-
-        max_id = 0
-        for file in existing_files:
-            df = pd.read_parquet(file)
-            if len(df) > 0:
-                ids = df['encounter_id'].str.extract(r'ENC_(\d+)')[0].astype(int)
-                if not ids.empty:
-                    max_id = max(max_id, ids.max())
-
-        return max_id + 1
-
-    def _get_next_transaction_id(self):
-        """Get next transaction ID from existing data"""
-        txn_pattern = os.path.join(self.output_dir, 'billing_transactions_*.parquet')
-        import glob
-        existing_files = glob.glob(txn_pattern)
-
-        if not existing_files:
-            return 1
-
-        max_id = 0
-        for file in existing_files:
-            df = pd.read_parquet(file)
-            if len(df) > 0:
-                ids = df['transaction_id'].str.extract(r'TXN_(\d+)')[0].astype(int)
-                if not ids.empty:
-                    max_id = max(max_id, ids.max())
-
-        return max_id + 1
-
-    def generate_daily_billing(self, encounters_df):
-        """Generate billing transactions for today's encounters"""
-        if len(encounters_df) == 0:
-            return pd.DataFrame()
-
-        transactions = []
-        transaction_id = self._get_next_transaction_id()
-
-        for _, encounter in encounters_df.iterrows():
-            # Generate 1-3 transactions per encounter
-            num_txns = random.randint(1, 3)
-
-            for _ in range(num_txns):
-                payer = self.payers.sample(1).iloc[0]
-                charge = encounter['total_charges'] / num_txns
-                payment = round(charge * payer['reimbursement_rate'], 2)
-                adjustment = round(charge - payment, 2)
-
-                status = random.choices(
-                    ['Paid', 'Pending', 'Denied'],
-                    weights=[0.70, 0.20, 0.10]
-                )[0]
-
-                # Transaction date is 1-45 days after discharge
-                txn_date = encounter['discharge_date'] + timedelta(days=random.randint(1, 45))
-
-                transactions.append({
-                    'transaction_id': f'TXN_{transaction_id:012d}',
-                    'hospital_id': encounter['hospital_id'],
-                    'encounter_id': encounter['encounter_id'],
-                    'patient_id': encounter['patient_id'],
-                    'payer_id': payer['payer_id'],
-                    'transaction_date': txn_date,
-                    'charge_amount': round(charge, 2),
-                    'payment_amount': payment if status == 'Paid' else 0,
-                    'adjustment_amount': adjustment,
-                    'denial_reason': 'Prior authorization required' if status == 'Denied' else None,
-                    'payment_status': status
-                })
-                transaction_id += 1
-
-        return pd.DataFrame(transactions)
-
-    def generate_and_save(self):
-        """Generate all daily data and save to parquet files"""
-        date_str = self.target_date.strftime('%Y-%m-%d')
-        date_folder = os.path.join(self.output_dir, date_str)
-        os.makedirs(date_folder, exist_ok=True)
-
-        print(f"\n📊 Generating encounters...")
-        encounters = self.generate_daily_encounters()
-        enc_file = os.path.join(date_folder, f'encounters_{date_str}.parquet')
-        encounters.to_parquet(enc_file, index=False)
-        print(f"✓ Generated {len(encounters):,} encounters → {enc_file}")
-
-        print(f"\n💰 Generating billing transactions...")
-        billing = self.generate_daily_billing(encounters)
-        bill_file = os.path.join(date_folder, f'billing_transactions_{date_str}.parquet')
-        billing.to_parquet(bill_file, index=False)
-        print(f"✓ Generated {len(billing):,} billing transactions → {bill_file}")
-
-        return {
-            'date': date_str,
-            'encounters': len(encounters),
-            'billing': len(billing),
-            'encounters_file': enc_file,
-            'billing_file': bill_file
-        }
+# Transactional feeds produced per batch (and covered by the freshness SLA)
+BATCH_TABLES = [
+    'encounters', 'billing_transactions', 'vital_signs', 'clinical_orders', 'clinical_results',
+    'medication_administration', 'quality_measures', 'care_plans', 'referrals', 'prior_authorizations',
+]
+IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_$]*$')
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Generate daily healthcare data')
-    parser.add_argument(
-        '--date',
-        type=str,
-        default=(datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'),
-        help='Target date (YYYY-MM-DD), defaults to yesterday'
-    )
-    parser.add_argument(
-        '--output-dir',
-        type=str,
-        default='/opt/airflow/data/staging',
-        help='Output directory for parquet files'
+@dataclass
+class ReferenceData:
+    """Existing tenants and their master data, as read from RAW_PHI."""
+    hospitals: pd.DataFrame    # hospital_id, hospital_type
+    patients: pd.DataFrame     # hospital_id, patient_id
+    providers: pd.DataFrame    # hospital_id, provider_id
+    facilities: pd.DataFrame   # hospital_id, facility_id, facility_type
+    payers: pd.DataFrame       # payer_id, reimbursement_rate
+
+
+def batch_tag(window_end: datetime) -> str:
+    return window_end.strftime('%Y%m%d%H')
+
+
+def resolve_window(hours: int, window_end: datetime | None = None) -> tuple[datetime, datetime]:
+    """Window [end - hours, end), end floored to the hour, naive UTC (matches TIMESTAMP_NTZ)."""
+    if window_end is None:
+        window_end = datetime.now(timezone.utc).replace(tzinfo=None)
+    window_end = window_end.replace(minute=0, second=0, microsecond=0)
+    return window_end - timedelta(hours=hours), window_end
+
+
+def seed_for(tag: str) -> int:
+    return int(hashlib.sha256(tag.encode()).hexdigest()[:8], 16)
+
+
+def generate_batch(ref: ReferenceData, window_start: datetime, window_end: datetime) -> dict[str, pd.DataFrame]:
+    """Generate all transactional tables for one window. Pure: no I/O.
+
+    Uses the same vectorized engine as the full generator; IDs are namespaced
+    with the batch tag and the RNG is seeded from it, so the batch is unique
+    and reproducible.
+    """
+    tag = batch_tag(window_end)
+    gen = HealthcareDataGenerator(window_start, window_end, seed=seed_for(tag), verbose=False, id_namespace=tag)
+    gen.load_reference(ref.patients, ref.providers, ref.facilities)
+
+    hours = (window_end - window_start).total_seconds() / 3600
+    eligible = ref.hospitals[
+        ref.hospitals['hospital_type'].isin(list(HOSPITAL_DISTRIBUTION))
+        & ref.hospitals['hospital_id'].isin(gen.hospital_patients.keys())
+        & ref.hospitals['hospital_id'].isin(gen.hospital_providers.keys())
+        & ref.hospitals['hospital_id'].isin(gen.hospital_facilities.keys())
+    ].sort_values('hospital_id')
+    if eligible.empty:
+        return {table: pd.DataFrame() for table in BATCH_TABLES}
+
+    # per-hospital volume: the type's daily range scaled to the window, with fractional carry
+    lo = eligible['hospital_type'].map(lambda t: HOSPITAL_DISTRIBUTION[t]['daily_encounters'][0]).to_numpy()
+    hi = eligible['hospital_type'].map(lambda t: HOSPITAL_DISTRIBUTION[t]['daily_encounters'][1]).to_numpy()
+    expected = gen.rng.integers(lo, hi + 1) * hours / 24
+    counts = np.floor(expected).astype(np.int64) + (gen.rng.random(len(expected)) < expected % 1)
+    hosp = np.repeat(eligible['hospital_id'].to_numpy(dtype=object), counts)
+
+    window_seconds = int((window_end - window_start).total_seconds())
+    admissions = (np.datetime64(window_start, 's')
+                  + gen.rng.integers(0, window_seconds, len(hosp)) * np.timedelta64(1, 's'))
+    encounters = gen.build_encounters(hosp, admissions)
+    return {'encounters': encounters, **gen.generate_encounter_children(encounters, ref.payers)}
+
+
+def write_batch(batch: dict[str, pd.DataFrame], output_dir: str) -> list[str]:
+    """Write one Parquet file per non-empty table, conformed to the raw DDL."""
+    return write_tables(batch, output_dir)
+
+
+def fetch_reference(sf, database: str) -> ReferenceData:
+    """Read tenants and master data from <database>.RAW_PHI using a SnowflakeConnection."""
+    if not IDENTIFIER.match(database):
+        raise ValueError(f'invalid database name: {database!r}')
+    raw = f'{database}.RAW_PHI'
+
+    def frame(sql, columns):
+        return pd.DataFrame(sf.execute_query(sql), columns=columns)
+
+    return ReferenceData(
+        hospitals=frame(f'select hospital_id, hospital_type from {raw}.raw_hospitals '
+                        f'where coalesce(is_active, true)', ['hospital_id', 'hospital_type']),
+        patients=frame(f'select hospital_id, patient_id from {raw}.raw_patients', ['hospital_id', 'patient_id']),
+        providers=frame(f'select hospital_id, provider_id from {raw}.raw_providers', ['hospital_id', 'provider_id']),
+        facilities=frame(f'select hospital_id, facility_id, facility_type from {raw}.raw_facilities',
+                         ['hospital_id', 'facility_id', 'facility_type']),
+        payers=frame(f'select payer_id, reimbursement_rate::float from {raw}.raw_payers',
+                     ['payer_id', 'reimbursement_rate']),
     )
 
-    args = parser.parse_args()
 
-    print("=" * 70)
-    print("🏥 Daily Healthcare Data Generator")
-    print("=" * 70)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Generate one window of transactional data for existing tenants')
+    parser.add_argument('--hours', type=int, default=3, help='Window length in hours (default 3)')
+    parser.add_argument('--window-end', type=datetime.fromisoformat, default=None,
+                        help='Window end, UTC (floored to the hour); defaults to now')
+    parser.add_argument('--output-dir', default='data_generation/batches',
+                        help='Parent folder; files go to <output-dir>/<batch_tag>/')
+    parser.add_argument('--database', default=os.getenv('DBT_RAW_DATABASE') or os.getenv('SNOWFLAKE_DATABASE'),
+                        help='Database holding RAW_PHI reference data')
+    args = parser.parse_args(argv)
 
+    from utils.snowflake_connector import SnowflakeConnection
+
+    window_start, window_end = resolve_window(args.hours, args.window_end)
+    tag = batch_tag(window_end)
+    sf = SnowflakeConnection()
     try:
-        generator = DailyHealthcareDataGenerator(
-            target_date=args.date
-        )
+        ref = fetch_reference(sf, args.database)
+    finally:
+        sf.close()
 
-        result = generator.generate_and_save()
-
-        print("\n" + "=" * 70)
-        print("✓ Generation Complete!")
-        print(f"  Date: {result['date']}")
-        print(f"  Encounters: {result['encounters']:,}")
-        print(f"  Billing Transactions: {result['billing']:,}")
-        print("=" * 70)
-    except Exception as e:
-        print(f"\n❌ Error: {str(e)}")
-        raise
+    batch = generate_batch(ref, window_start, window_end)
+    paths = write_batch(batch, os.path.join(args.output_dir, tag))
+    print(f'Batch {tag} [{window_start} -> {window_end}):')
+    for table in BATCH_TABLES:
+        print(f'  {table:<28} {len(batch[table]):>7,} rows')
+    print(f'Wrote {len(paths)} files to {os.path.join(args.output_dir, tag)}')
+    return 0
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    sys.exit(main())

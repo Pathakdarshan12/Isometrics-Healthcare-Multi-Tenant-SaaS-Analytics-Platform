@@ -40,12 +40,19 @@ dbt docs generate && dbt docs serve
 
 Data pipeline (from repo root):
 ```bash
-python data_generation/generate_data.py                       # full history CSVs -> data_generation/2025/
-python data_generation/daily_data_generation.py --date YYYY-MM-DD --output-dir <dir>   # default dir is an Airflow path
-python utils/csv_to_parquet.py                                # -> data_generation/parquet/
+python data_generation/generate_data.py                       # 100 hospitals, 30 days -> data_generation/parquet/*.parquet
+python data_generation/generate_data.py --target-encounters 3000000   # size the date range for ~3M encounters
+python data_generation/generate_data.py --hospitals 10 --days 7 --format both  # small run, Parquet + CSV
+python -m pytest data_generation/tests                        # generator integrity tests (offline)
 python -m utils.upload_files_to_stage                         # PUT to @RAW_PHI.HEALTHCARE_DATA_STAGE/2023/
 snowsql -f scripts/load_data_to_snowflake.sql                 # COPY INTO all 21 raw tables
 streamlit run monitoring_dashboard/app.py
+```
+
+Scheduled pipeline (from repo root; `.github/workflows/pipeline_schedule.yml` runs it every 3h on prod when repo variable `PIPELINE_ENABLED=true`):
+```bash
+python -m orchestration.isometrics_orchestration --target dev [--hours 3] [--skip-dbt | --dbt-only]
+python -m pytest orchestration/tests                          # offline
 ```
 
 API (from repo root):
@@ -110,4 +117,7 @@ Write macro docstrings as Jinja comments (`{# #}`), never SQL `/* */`: Jinja ren
 
 ## Known pitfalls
 - Readmissions are defined in `stg_healthcare__encounters` (previous *inpatient* stay at the same hospital, 1–30 days); `assert_readmission_logic_valid` recomputes this independently with a self-join, so change both together.
-- `orchestration/isometrics_orchestration.py` is only an outline; there is no scheduler. `daily_data_generation.py` defaults to Airflow paths but nothing runs it.
+- Data generation (`data_generation/generate_data.py`) is a vectorized, streaming engine: patients and encounters are produced in batches (`--batch-size`), each batch's dependent tables are generated and written immediately via `schema.TableWriter`, then released. Keep new table logic vectorized (NumPy arrays, `expand()` for per-parent child counts) and take randomness from `self.rng` so a seed reproduces the dataset. Tenant references must come from `GroupSampler`s keyed by hospital (`self._sampler('providers')` etc.), never from a global ID range.
+- `data_generation/schema.py` derives Arrow schemas and the pipeline's COPY columns from the raw DDL; the writer raises on generated columns missing from the DDL. Add a column to the DDL first.
+- The scheduled batch generator (`daily_data_generation.py`) reuses the same engine with `id_namespace=<batch tag>` (IDs like `ENC_<YYYYMMDDHH>_0000001`) and a seed derived from the tag; keep both when adding a feed, or reruns duplicate rows and batches overwrite each other.
+- Source freshness is configured at source level and disabled (`freshness: null`) for master-data tables; a new transactional feed must be added to `BATCH_TABLES` or it will breach the freshness SLA.

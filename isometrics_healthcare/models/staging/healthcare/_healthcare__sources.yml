@@ -9,6 +9,8 @@ sources:
     database: "{{ env_var('DBT_RAW_DATABASE', target.database) }}"
     schema: raw_phi
 
+    # Freshness SLA for the transactional feeds loaded every 3 hours by
+    # orchestration/isometrics_orchestration.py (master-data tables opt out below).
     config:
       loaded_at_field: _loaded_at
       freshness:
@@ -19,6 +21,7 @@ sources:
       - name: raw_hospitals
         description: "Hospital master data (tenants)"
         config:
+          freshness: null  # master data: loaded once, not by the scheduled pipeline
           meta:
             contains_phi: false
         columns:
@@ -42,6 +45,7 @@ sources:
           Contains: MRN, Names, DOB, Zip Code
           Access: Restricted to authorized personnel only
         config:
+          freshness: null  # master data: loaded once, not by the scheduled pipeline
           meta:
             contains_phi: true
             phi_fields: ['mrn', 'first_name', 'last_name', 'date_of_birth', 'zip_code']
@@ -67,6 +71,7 @@ sources:
       - name: raw_providers
         description: "Provider roster - physicians, nurses, specialists"
         config:
+          freshness: null  # master data: loaded once, not by the scheduled pipeline
           meta:
             contains_phi: false
         columns:
@@ -88,6 +93,8 @@ sources:
 
       - name: raw_facilities
         description: "Facility/department master data"
+        config:
+          freshness: null  # master data: loaded once, not by the scheduled pipeline
         columns:
           - name: facility_id
             tests:
@@ -211,6 +218,7 @@ sources:
           ⚠️ PHI WARNING: Active and historical patient diagnoses.
           Contains: Diagnosis dates, patient linkage
         config:
+          freshness: null  # master data: loaded once, not by the scheduled pipeline
           meta:
             contains_phi: true
             phi_fields: ['onset_date', 'resolution_date']
@@ -241,6 +249,7 @@ sources:
           ⚠️ PHI WARNING: Patient allergy and adverse reaction history.
           Contains: Patient linkage, allergy dates
         config:
+          freshness: null  # master data: loaded once, not by the scheduled pipeline
           meta:
             contains_phi: true
             phi_fields: ['onset_date', 'resolution_date']
@@ -271,6 +280,7 @@ sources:
           ⚠️ PHI WARNING: Patient insurance coverage information.
           Contains: Policy numbers, subscriber information
         config:
+          freshness: null  # master data: loaded once, not by the scheduled pipeline
           meta:
             contains_phi: true
             phi_fields: ['policy_number', 'subscriber_id', 'subscriber_name']
@@ -300,6 +310,7 @@ sources:
           ⚠️ PHI WARNING: Social Determinants of Health screenings.
           Contains: Patient linkage, screening dates
         config:
+          freshness: null  # master data: loaded once, not by the scheduled pipeline
           meta:
             contains_phi: true
             phi_fields: ['screening_date']
