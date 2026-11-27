@@ -71,7 +71,7 @@ Snowflake scripts in `scripts/`, all ACCOUNTADMIN and idempotent, in run order: 
 ## Architecture
 
 ### Environments
-Three databases — `ISOMETRICS_DEV`, `ISOMETRICS_CI`, `ISOMETRICS_PROD` — each built by its own role (`DBT_DEV_ROLE`, `DBT_CI_ROLE`, `DBT_PROD_ROLE`). The RLS policies in `macros/setup_rls_policies.sql` grant visibility by `CURRENT_ROLE()` + `CURRENT_DATABASE()` combos, so **behavior differs by role/env**; always consider which role a model is built and queried under.
+Three databases — `ISOMETRICS_DEV`, `ISOMETRICS_CI`, `ISOMETRICS_PROD` — each built by its own role (`DBT_DEV_ROLE`, `DBT_CI_ROLE`, `DBT_PROD_ROLE`). The RLS policies in `macros/setup_rls_policies.sql` grant visibility by `CURRENT_ROLE()` + `CURRENT_DATABASE()` combos, so **behavior differs by role/env**; always consider which role a model is built and queried under. Inside a policy, `CURRENT_DATABASE()` is the database of the **protected object**, not the session's: a role reading another database's tables (CI reads `ISOMETRICS_DEV` raw) must be allowed for that database explicitly.
 
 Sources (`models/staging/*/_*__sources.yml`) read `RAW_PHI` in `env_var('DBT_RAW_DATABASE', target.database)`. CI sets `DBT_RAW_DATABASE=ISOMETRICS_DEV` because CI's database only holds per-run schemas and the policies (`DBT_CI_ROLE` has `SELECT` on dev raw); prod reads `ISOMETRICS_PROD.RAW_PHI`.
 

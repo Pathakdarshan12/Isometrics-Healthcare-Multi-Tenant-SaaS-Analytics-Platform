@@ -3,6 +3,14 @@
   create the policy and keep an existing one in sync (ALTER ... SET BODY),
   without CREATE OR REPLACE (which fails while the policy is attached).
 
+  NOTE on CURRENT_DATABASE(): inside a row access policy it returns the
+  database of the PROTECTED OBJECT, not the session's current database
+  (verified on Snowflake). So the env branches mean "this role may read rows of
+  objects stored in that database". DBT_CI_ROLE needs ISOMETRICS_CI (its own
+  build) and ISOMETRICS_DEV (its sources: DBT_RAW_DATABASE=ISOMETRICS_DEV);
+  without the latter, CI reads zero rows from policy-protected dev raw tables.
+  Which databases a role can reach at all is decided by grants.
+
   NOTE on the mapping-table lookup: written as `hospital_id IN (SELECT
   m.hospital_id ...)` so the policy argument (outside the subquery) and the
   mapping column (qualified inside it) cannot be confused. Snowflake rejects
@@ -15,7 +23,7 @@
 {% macro rls_hospital_isolation_body() %}
   CASE
     WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN', 'SYSADMIN') THEN TRUE
-    WHEN CURRENT_ROLE() = 'DBT_CI_ROLE' AND CURRENT_DATABASE() = 'ISOMETRICS_CI' THEN TRUE
+    WHEN CURRENT_ROLE() = 'DBT_CI_ROLE' AND CURRENT_DATABASE() IN ('ISOMETRICS_CI', 'ISOMETRICS_DEV') THEN TRUE
     WHEN CURRENT_ROLE() = 'DBT_DEV_ROLE' AND (CURRENT_DATABASE() = 'ISOMETRICS_DEV' OR CURRENT_DATABASE() LIKE '%_DEV') THEN TRUE
     WHEN CURRENT_ROLE() = 'DBT_PROD_ROLE' AND CURRENT_DATABASE() LIKE '%_PROD' THEN TRUE
     WHEN CURRENT_ROLE() = 'HIPAA_AUDITOR' THEN TRUE
@@ -35,7 +43,7 @@
 {% macro rls_phi_access_body() %}
   CASE
     WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN', 'PHI_ADMIN', 'HIPAA_AUDITOR') THEN TRUE
-    WHEN CURRENT_ROLE() = 'DBT_CI_ROLE' AND CURRENT_DATABASE() = 'ISOMETRICS_CI' THEN TRUE
+    WHEN CURRENT_ROLE() = 'DBT_CI_ROLE' AND CURRENT_DATABASE() IN ('ISOMETRICS_CI', 'ISOMETRICS_DEV') THEN TRUE
     WHEN CURRENT_ROLE() = 'DBT_DEV_ROLE' AND (CURRENT_DATABASE() = 'ISOMETRICS_DEV' OR CURRENT_DATABASE() LIKE '%_DEV') THEN TRUE
     WHEN CURRENT_ROLE() = 'DBT_PROD_ROLE' AND CURRENT_DATABASE() LIKE '%_PROD' THEN TRUE
     WHEN CURRENT_ROLE() LIKE 'HOSPITAL_%_PHI_ANALYST' THEN
