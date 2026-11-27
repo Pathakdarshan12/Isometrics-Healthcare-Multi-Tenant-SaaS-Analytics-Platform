@@ -15,7 +15,6 @@
 
 with revenue_cycle as (
     select * from {{ ref('int_financial__revenue_cycle') }}
-    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
 
 daily_financial_metrics as (

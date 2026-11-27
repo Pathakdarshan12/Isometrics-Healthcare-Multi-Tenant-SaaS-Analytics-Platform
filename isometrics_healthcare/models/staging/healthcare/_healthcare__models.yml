@@ -32,7 +32,7 @@ models:
     config:
       meta:
         contains_phi: true
-        phi_fields: ['date_of_birth', 'zip_code_3digit']
+        phi_fields: ['birth_year', 'zip_code_3digit']
     columns:
       - name: patient_id
         description: "De-identified patient ID"
@@ -47,12 +47,22 @@ models:
                 to: ref('stg_healthcare__hospitals')
                 field: hospital_id
       - name: age_years
-        description: "Current age in years"
+        description: "Current age in completed years, top-coded at 90 (HIPAA Safe Harbor)"
         tests:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-                max_value: 120
+                max_value: 90
+      - name: birth_year
+        description: "Year of birth; null for patients aged 90+ (HIPAA Safe Harbor)"
+      - name: zip_code_3digit
+        description: "3-digit ZIP; '000' for restricted low-population areas (HIPAA Safe Harbor)"
+        tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "rlike '[0-9]{3}'"
+              config:
+                where: "zip_code_3digit is not null"
       - name: age_group
         tests:
           - accepted_values:

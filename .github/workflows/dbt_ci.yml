@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CI_SCHEMA: dbt_ci_${{ github.event.pull_request.number || github.run_id }}
+      # CI's own RAW_PHI schema is dropped after every run, so sources read dev raw data
+      DBT_RAW_DATABASE: ISOMETRICS_DEV
 
     steps:
       - name: 📥 Checkout code
@@ -103,7 +105,6 @@ jobs:
         run: |
           cd isometrics_healthcare
           dbt run-operation setup_rls_policies
-        continue-on-error: true  # Policies might already exist
 
       - name: dbt debug
         run: |
@@ -130,17 +131,15 @@ jobs:
           cd isometrics_healthcare
           dbt run --select marts
 
-#      - name: dbt test (data quality)
-#        run: |
-#          cd isometrics_healthcare
-#          dbt test --exclude test_name:assert_rls_*
-#        continue-on-error: true  # For test Purpose only
+      - name: dbt test (data quality)
+        run: |
+          cd isometrics_healthcare
+          dbt test --exclude assert_rls_column_exists assert_rls_policy_applied
 
       - name: Verify RLS policies
         run: |
           cd isometrics_healthcare
           dbt test --select assert_rls_column_exists assert_rls_policy_applied
-        continue-on-error: true  # RLS tests might fail in CI environment
 
       - name: Verify data isolation
         run: |

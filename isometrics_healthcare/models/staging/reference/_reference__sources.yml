@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: reference
     description: "Reference/lookup tables - No PHI"
-    database: isometrics_dev
+    database: "{{ env_var('DBT_RAW_DATABASE', target.database) }}"
     schema: raw_phi
 
     tables:

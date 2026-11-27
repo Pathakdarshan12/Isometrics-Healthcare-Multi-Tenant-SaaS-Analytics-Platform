@@ -28,13 +28,13 @@ class SnowflakeConnection:
         Initialize Snowflake connection parameters.
         Defaults to environment variables if parameters not provided.
         """
-        self.user = os.getenv('SNOWFLAKE_USER')
-        self.password = os.getenv('SNOWFLAKE_PASSWORD')
-        self.account = os.getenv('SNOWFLAKE_ACCOUNT')
-        self.warehouse = os.getenv('SNOWFLAKE_WAREHOUSE')
-        self.database = os.getenv('SNOWFLAKE_DATABASE')
-        self.schema = os.getenv('SNOWFLAKE_SCHEMA')
-        self.role = os.getenv('SNOWFLAKE_ROLE')
+        self.user = user or os.getenv('SNOWFLAKE_USER')
+        self.password = password or os.getenv('SNOWFLAKE_PASSWORD')
+        self.account = account or os.getenv('SNOWFLAKE_ACCOUNT')
+        self.warehouse = warehouse or os.getenv('SNOWFLAKE_WAREHOUSE')
+        self.database = database or os.getenv('SNOWFLAKE_DATABASE')
+        self.schema = schema or os.getenv('SNOWFLAKE_SCHEMA')
+        self.role = role or os.getenv('SNOWFLAKE_ROLE')
         self.connection = None
 
     def connect(self) -> snowflake.connector.SnowflakeConnection:

@@ -10,7 +10,6 @@
 
 with encounters as (
     select * from {{ ref('int_encounters__enriched') }}
-    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
 
 facilities as (

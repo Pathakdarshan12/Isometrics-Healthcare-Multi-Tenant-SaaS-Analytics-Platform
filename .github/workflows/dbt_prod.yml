@@ -1,0 +1,245 @@
+name: dbt Production Deployment
+on:
+  # Deploy only after CI has passed on main
+  workflow_run:
+    workflows: ["dbt CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_refresh:
+        description: 'Full refresh models'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v3
+        with:
+          # Deploy exactly the commit CI tested
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dbt
+        run: pip install dbt-snowflake==1.11.0
+
+      - name: Install SnowSQL
+        run: |
+          curl -sSLo snowsql.bash https://sfc-repo.snowflakecomputing.com/snowsql/bootstrap/1.2/linux_x86_64/snowsql-1.2.32-linux_x86_64.bash
+          SNOWSQL_DEST=~/bin SNOWSQL_LOGIN_SHELL=~/.profile bash snowsql.bash
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: 🔧 Setup dbt profile
+        run: |
+          mkdir -p ~/.dbt
+          cat <<EOF > ~/.dbt/profiles.yml
+          isometrics_healthcare:
+            target: prod
+            outputs:
+              prod:
+                type: snowflake
+                account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+                user: ${{ secrets.SNOWFLAKE_PROD_USER }}
+                password: ${{ secrets.SNOWFLAKE_PROD_PASSWORD }}
+                role: DBT_PROD_ROLE
+                database: ISOMETRICS_PROD
+                warehouse: DBT_PROD_WH
+                schema: marts
+                threads: 8
+          EOF
+
+      - name: 🔧 Verify production environment
+        run: |
+          cd isometrics_healthcare
+          cat <<EOF > verify_prod.sql
+          USE ROLE DBT_PROD_ROLE;
+          USE WAREHOUSE DBT_PROD_WH;
+          USE DATABASE ISOMETRICS_PROD;
+          
+          -- Verify schemas exist
+          SHOW SCHEMAS IN DATABASE ISOMETRICS_PROD;
+          
+          -- Verify RLS policies exist
+          SHOW ROW ACCESS POLICIES IN DATABASE ISOMETRICS_PROD;
+          
+          SELECT 'Production environment verified' as status;
+          EOF
+          
+          ~/bin/snowsql \
+            -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
+            -u ${{ secrets.SNOWFLAKE_PROD_USER }} \
+            -o log_level=INFO \
+            -f verify_prod.sql
+        env:
+          SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PROD_PASSWORD }}
+
+      - name: Install dbt packages
+        run: |
+          cd isometrics_healthcare
+          dbt deps
+
+      - name: 🔒 Setup RLS policies
+        run: |
+          cd isometrics_healthcare
+          dbt run-operation setup_rls_policies
+
+      - name: dbt compile
+        run: |
+          cd isometrics_healthcare
+          dbt compile
+
+      - name: 🧪 Pre-deployment tests
+        run: |
+          cd isometrics_healthcare
+          dbt test --select source:*
+
+      - name: 🚀 Deploy staging models
+        run: |
+          cd isometrics_healthcare
+          dbt run --select staging ${{ github.event.inputs.full_refresh == 'true' && '--full-refresh' || '' }}
+
+      - name: 🚀 Deploy intermediate models
+        run: |
+          cd isometrics_healthcare
+          dbt run --select intermediate
+
+      - name: 🚀 Deploy marts (incremental)
+        run: |
+          cd isometrics_healthcare
+          dbt run --select marts ${{ github.event.inputs.full_refresh == 'true' && '--full-refresh' || '' }}
+
+      - name: 📸 Snapshot execution
+        run: |
+          cd isometrics_healthcare
+          dbt snapshot
+
+      - name: 🧪 Post-deployment data quality tests
+        run: |
+          cd isometrics_healthcare
+          dbt test --exclude assert_rls_column_exists assert_rls_policy_applied
+
+      - name: 🔒 Verify RLS policies applied
+        run: |
+          cd isometrics_healthcare
+          dbt test --select assert_rls_policy_applied assert_rls_column_exists
+
+      - name: 🔒 Verify data isolation
+        run: |
+          cd isometrics_healthcare
+          dbt test --select assert_no_cross_hospital_data_leakage assert_no_cross_hospital_encounters
+
+      - name: 📊 Generate production docs
+        run: |
+          cd isometrics_healthcare
+          dbt docs generate
+
+      - name: 📤 Upload production manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-dbt-manifest
+          path: |
+            isometrics_healthcare/target/manifest.json
+            isometrics_healthcare/target/catalog.json
+            isometrics_healthcare/target/run_results.json
+
+      - name: 📈 Query production metrics
+        run: |
+          cd isometrics_healthcare
+          cat <<EOF > prod_metrics.sql
+          USE ROLE DBT_PROD_ROLE;
+          USE DATABASE ISOMETRICS_PROD;
+          
+          -- Model row counts
+          SELECT 
+            table_schema,
+            table_name,
+            row_count,
+            bytes / (1024*1024*1024) as size_gb,
+            last_altered
+          FROM ISOMETRICS_PROD.INFORMATION_SCHEMA.TABLES
+          WHERE table_schema IN ('DBT_PROD_STAGING', 'DBT_PROD_MARTS')
+          ORDER BY row_count DESC;
+          
+          -- Mart table counts
+          SELECT 
+            'staging' as layer,
+            COUNT(*) as table_count
+          FROM ISOMETRICS_PROD.INFORMATION_SCHEMA.TABLES
+          WHERE table_schema = 'DBT_PROD_STAGING'
+          UNION ALL
+          SELECT 
+            'marts' as layer,
+            COUNT(*) as table_count
+          FROM ISOMETRICS_PROD.INFORMATION_SCHEMA.TABLES
+          WHERE table_schema = 'DBT_PROD_MARTS';
+          EOF
+          
+          ~/bin/snowsql \
+            -a ${{ secrets.SNOWFLAKE_ACCOUNT }} \
+            -u ${{ secrets.SNOWFLAKE_PROD_USER }} \
+            -o log_level=INFO \
+            -f prod_metrics.sql
+        env:
+          SNOWSQL_PWD: ${{ secrets.SNOWFLAKE_PROD_PASSWORD }}
+
+      - name: 🔔 Slack notification on success
+        if: success()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "✅ Production deployment successful",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Production Deployment Complete*\n\n✅ All models deployed successfully\n📊 Commit: `${{ github.sha }}`\n👤 By: ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: 🔔 Slack notification on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "❌ Production deployment failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Production Deployment Failed*\n\n❌ Deployment encountered errors\n📊 Commit: `${{ github.sha }}`\n👤 By: ${{ github.actor }}\n🔗 <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-deployment-logs
+          path: |
+            isometrics_healthcare/target/run_results.json
+            isometrics_healthcare/logs/dbt.log

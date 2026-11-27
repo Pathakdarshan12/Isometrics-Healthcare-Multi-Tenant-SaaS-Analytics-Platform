@@ -44,8 +44,8 @@ with_readmission_windows as (
 
         -- Look back for previous discharge in last 30 days
         lag(discharge_date) over (
-            partition by e.patient_id
-            order by e.admission_date
+            partition by e.patient_id, e.hospital_id
+            order by e.admission_date, e.encounter_id
         ) as previous_discharge_date,
 
         -- Calculate days since last discharge

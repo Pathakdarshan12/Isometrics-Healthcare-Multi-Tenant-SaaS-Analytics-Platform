@@ -10,3 +10,41 @@ models:
       - name: metric_date
         tests:
           - not_null
+
+  - name: fct_prior_authorization_metrics
+    description: >
+      Monthly prior authorization performance per hospital and payer: approval and
+      denial rates (over decided requests), decision turnaround, unit utilization,
+      and charges at risk from denied/pending authorizations.
+    config:
+      meta:
+        owner: "revenue-cycle-analytics@company.com"
+        contains_phi: false
+    tests:
+      - has_tenant_column
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['hospital_id', 'payer_id', 'request_month']
+    columns:
+      - name: prior_auth_metric_key
+        tests:
+          - not_null
+          - unique
+      - name: hospital_id
+        description: "🔒 Hospital identifier (tenant)"
+        tests:
+          - not_null
+      - name: approval_rate_pct
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+              config:
+                where: "approval_rate_pct is not null"
+      - name: charges_at_risk
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0

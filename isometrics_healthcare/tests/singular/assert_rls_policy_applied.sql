@@ -1,87 +1,51 @@
--- Test that RLS policy is actually applied to all mart tables
+-- Test that the tenant RLS policy is attached to every tenant-scoped staging and
+-- mart model (reference lookups have no hospital_id and are excluded).
+--
+-- Uses INFORMATION_SCHEMA.POLICY_REFERENCES (real-time) per model, built from
+-- the dbt graph, so it works in any target (dev / ci / prod) without hard-coded
+-- schema names and without ACCOUNT_USAGE latency (up to 2 hours).
+-- Returns one row per model missing the policy. Expected: zero rows.
 
-WITH mart_tables AS (
-    -- Get all tables in the marts schema
-    SELECT
-        table_catalog,
-        table_schema,
-        table_name,
-        CONCAT(table_catalog, '.', table_schema, '.', table_name) as full_table_name
-    FROM information_schema.tables
-    WHERE table_schema = 'DBT_DEV_MARTS'
-      AND table_type = 'BASE TABLE'
-),
+{% set checks = [] %}
+{% if execute %}
+  {% for node in graph.nodes.values()
+       if node.resource_type == 'model'
+       and node.fqn[1] in ['staging', 'marts']
+       and node.fqn[2] != 'reference'
+       and node.config.materialized in ['view', 'table', 'incremental'] %}
+    {% do checks.append({
+        'name': node.name,
+        'relation': node.relation_name,
+        'domain': 'view' if node.config.materialized == 'view' else 'table'
+    }) %}
+  {% endfor %}
+{% endif %}
 
-active_policies AS (
-    -- Get all active RLS policies and their assignments
-    SELECT
-        policy_name,
-        policy_schema,
-        policy_db as policy_database,
-        ref_database_name,
-        ref_schema_name,
-        ref_entity_name,
-        ref_entity_domain,
-        policy_status,
-        CONCAT(ref_database_name, '.', ref_schema_name, '.', ref_entity_name) as full_ref_name
-    FROM snowflake.account_usage.policy_references
-    WHERE policy_kind = 'ROW_ACCESS_POLICY'
-      AND ref_entity_domain = 'TABLE'
-      AND policy_status = 'ACTIVE'
-),
-
-policy_details AS (
-    -- Get policy definitions to verify they reference hospital_id
-    SELECT
-        policy_name,
-         policy_schema,
-        POLICY_CATALOG as policy_database,
-        policy_body,
-        policy_signature
-    FROM snowflake.account_usage.row_access_policies
-    WHERE deleted IS NULL
+{% if checks | length == 0 %}
+select null as model_name, null as relation_name, null as rls_status where false
+{% else %}
+with policy_checks as (
+  {% for c in checks %}
+    select
+        '{{ c.name }}' as model_name,
+        '{{ c.relation }}' as relation_name,
+        count_if(
+            policy_kind = 'ROW_ACCESS_POLICY'
+            and upper(policy_name) = 'HOSPITAL_ISOLATION_POLICY'
+            and contains(upper(ref_arg_column_names), 'HOSPITAL_ID')
+        ) as rls_policy_count
+    from table({{ target.database }}.information_schema.policy_references(
+        ref_entity_name => '{{ c.relation }}',
+        ref_entity_domain => '{{ c.domain }}'
+    ))
+    {% if not loop.last %}union all{% endif %}
+  {% endfor %}
 )
 
--- Find tables WITHOUT proper RLS policies
-SELECT
-    mt.table_catalog as database_name,
-    mt.table_schema as schema_name,
-    mt.table_name,
-    mt.full_table_name,
-    CASE
-        WHEN ap.policy_name IS NULL
-        THEN 'CRITICAL: No RLS policy attached'
-        WHEN ap.policy_status != 'ACTIVE'
-        THEN 'CRITICAL: RLS policy exists but not ACTIVE'
-        WHEN pd.policy_body IS NULL
-        THEN 'ERROR: Policy reference exists but policy definition not found'
-        WHEN NOT CONTAINS(LOWER(pd.policy_body), 'hospital_id')
-        THEN 'WARNING: RLS policy does not reference hospital_id column'
-        ELSE 'OK'
-    END as rls_status,
-    ap.policy_name as attached_policy,
-    ap.policy_status,
-    pd.policy_signature,
-    -- Show snippet of policy body for verification
-    LEFT(pd.policy_body, 200) as policy_body_preview
-FROM mart_tables mt
-LEFT JOIN active_policies ap
-    ON mt.full_table_name = ap.full_ref_name
-LEFT JOIN policy_details pd
-    ON ap.policy_name = pd.policy_name
-    AND ap.policy_schema = pd.policy_schema
-    AND ap.policy_database = pd.policy_database
-WHERE
-    -- Only show tables with issues
-    (ap.policy_name IS NULL
-     OR ap.policy_status != 'ACTIVE'
-     OR pd.policy_body IS NULL
-     OR NOT CONTAINS(LOWER(pd.policy_body), 'hospital_id'))
-ORDER BY
-    CASE
-        WHEN ap.policy_name IS NULL THEN 1
-        WHEN ap.policy_status != 'ACTIVE' THEN 2
-        WHEN pd.policy_body IS NULL THEN 3
-        ELSE 4
-    END,
-    mt.table_name
+select
+    model_name,
+    relation_name,
+    'CRITICAL: hospital_isolation_policy not attached on hospital_id' as rls_status
+from policy_checks
+where rls_policy_count = 0
+{% endif %}

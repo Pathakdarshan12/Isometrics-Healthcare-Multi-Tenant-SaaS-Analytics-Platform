@@ -64,11 +64,16 @@ AS (hospital_id VARCHAR) RETURNS BOOLEAN ->
 
     -- Generic hospital analyst (uses mapping table)
     WHEN CURRENT_ROLE() = 'HOSPITAL_ANALYST' THEN
+      -- Derived table renames the column: an unqualified hospital_id inside a
+      -- subquery binds to the table's column (always true), not the policy arg.
       EXISTS (
         SELECT 1
-        FROM ISOMETRICS_DEV.AUDIT.user_hospital_mapping m
+        FROM (
+          SELECT hospital_id AS mapped_hospital_id, user_name, access_start_date, access_end_date
+          FROM ISOMETRICS_DEV.AUDIT.user_hospital_mapping
+        ) m
         WHERE m.user_name = CURRENT_USER()
-          AND m.hospital_id = hospital_id
+          AND m.mapped_hospital_id = hospital_id
           AND CURRENT_DATE() BETWEEN m.access_start_date AND m.access_end_date
       )
 

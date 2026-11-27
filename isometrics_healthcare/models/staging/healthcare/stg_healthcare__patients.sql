@@ -4,19 +4,36 @@
     secure = True,
     tags=['staging', 'bronze', 'patients'],
     schema = 'staging',
-    cluster_by=['hospital_id', 'patient_id'],
     post_hook=["{{ apply_rls_policy() }}"],
     meta={
       'contains_phi': true,
-      'phi_fields': ['date_of_birth', 'zip_code']
+      'phi_fields': ['birth_year']
     }
   )
 }}
 
-with source as(
+/*
+  Access control is enforced by the hospital_isolation_policy row access policy
+  (attached via post_hook), not by filtering on CURRENT_ROLE() here.
+
+  HIPAA Safe Harbor applied:
+  - names / MRN not selected (they stay in RAW_PHI)
+  - date_of_birth reduced to birth year; ages > 89 aggregated into 90
+  - ZIP reduced to 3 digits with low-population prefixes set to '000'
+*/
+
+with source as (
     select * from {{ source('healthcare', 'raw_patients') }}
-    WHERE CURRENT_ROLE() IN ('ACCOUNTADMIN', 'DBT_DEV_ROLE') -- Admin/Dev roles see everything
 ),
+
+aged as (
+    select
+        *,
+        -- Exact age in completed years (datediff('year') overcounts before the birthday)
+        floor(months_between(current_date(), date_of_birth) / 12)::int as exact_age_years
+    from source
+),
+
 deidentified as (
     select
         -- Primary Key
@@ -25,29 +42,24 @@ deidentified as (
         -- Foreign Keys
         hospital_id,  -- 🔒 CRITICAL for RLS
 
-        -- Demographics (De-identified where possible)
-        -- NOTE: We're NOT selecting first_name, last_name, mrn in staging
-        -- Those stay in raw layer for authorized access only
+        -- Year only; suppressed for 90+ (Safe Harbor)
+        case
+            when exact_age_years > 89 then null
+            else year(date_of_birth)
+        end as birth_year,
 
-        date_of_birth,  -- Required for age calculations
-
-        -- Calculate age (de-identified)
-        datediff('year', date_of_birth, current_date()) as age_years,
+        -- Age, top-coded at 90 (Safe Harbor)
+        least(exact_age_years, 90) as age_years,
+        (exact_age_years > 89) as is_age_90_plus,
 
         -- Age group (for analytics)
-        case
-            when datediff('year', date_of_birth, current_date()) < 18 then 'Pediatric'
-            when datediff('year', date_of_birth, current_date()) between 18 and 64 then 'Adult'
-            when datediff('year', date_of_birth, current_date()) >= 65 then 'Geriatric'
-            else 'Unknown'
-        end as age_group,
+        {{ calculate_age_group('exact_age_years') }} as age_group,
 
         gender,
         race,
         ethnicity,
 
-        -- Zip code first 3 digits only (HIPAA Safe Harbor de-identification)
-        left(zip_code, 3) as zip_code_3digit,
+        {{ deidentify_zipcode('zip_code') }} as zip_code_3digit,
 
         primary_language,
         marital_status,
@@ -58,6 +70,7 @@ deidentified as (
         -- Metadata
         _loaded_at as loaded_at_timestamp
 
-    from source
+    from aged
 )
+
 select * from deidentified

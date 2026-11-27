@@ -9,7 +9,7 @@
     takes_antiplatelet=false,
     excessive_alcohol=false
 ) %}
-/*
+{#
   HAS-BLED Bleeding Risk Score for Anticoagulation
 
   Used to assess bleeding risk in atrial fibrillation patients on anticoagulation.
@@ -46,7 +46,7 @@
         takes_antiplatelet='on_antiplatelet',
         excessive_alcohol='alcohol_abuse'
     ) }} as hasbled_score
-*/
+#}
 
 (
   -- Hypertension (uncontrolled, >160 mmHg systolic)
@@ -81,12 +81,12 @@
 
 
 {% macro hasbled_risk_category(score_column) %}
-/*
+{#
   Categorize HAS-BLED score into risk levels
 
   Usage:
     {{ hasbled_risk_category('hasbled_score') }} as bleeding_risk_category
-*/
+#}
 
 case
   when {{ score_column }} >= 5 then 'High Risk (≥5% annual bleeding risk)'
@@ -99,12 +99,12 @@ end
 
 
 {% macro hasbled_annual_bleeding_risk(score_column) %}
-/*
+{#
   Convert HAS-BLED score to estimated annual major bleeding risk percentage
 
   Usage:
     {{ hasbled_annual_bleeding_risk('hasbled_score') }} as annual_bleeding_risk_pct
-*/
+#}
 
 case
   when {{ score_column }} = 0 then 1.13

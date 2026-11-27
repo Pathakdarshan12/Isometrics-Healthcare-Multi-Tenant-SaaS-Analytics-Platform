@@ -4,7 +4,6 @@
     secure = True,
     tags=['staging', 'bronze', 'encounters'],
     schema = 'staging',
-    cluster_by=['hospital_id', 'encounter_id'],
     post_hook=["{{ apply_rls_policy() }}"],
     meta={
       'contains_phi': true,
@@ -68,27 +67,40 @@ clean_data as (
         and facility_hospital_mismatch = false
 ),
 
--- Calculate readmissions using lag() to match test expectations
+-- Readmission logic (CMS-style, all-cause, same hospital):
+-- an inpatient stay is a readmission if the patient's most recent *inpatient*
+-- discharge at the same hospital was 1-30 days before this admission.
+-- Partitioning by is_inpatient means intervening ED/outpatient visits do not
+-- hide a readmission. previous_* (any type) columns are kept for analysis.
 readmission_logic as (
     select
         *,
-        -- Get previous encounter's discharge date for same patient
+        -- Previous encounter of any type (same patient, same hospital)
         lag(discharge_date) over (
             partition by patient_id, hospital_id
-            order by admission_date
+            order by admission_date, encounter_id
         ) as previous_discharge_date,
 
-        -- Get previous encounter type
         lag(encounter_type) over (
             partition by patient_id, hospital_id
-            order by admission_date
+            order by admission_date, encounter_id
         ) as previous_encounter_type,
 
-        -- Get previous encounter_id for validation
         lag(encounter_id) over (
             partition by patient_id, hospital_id
-            order by admission_date
-        ) as previous_encounter_id
+            order by admission_date, encounter_id
+        ) as previous_encounter_id,
+
+        -- Previous inpatient stay (only meaningful on inpatient rows)
+        lag(discharge_date) over (
+            partition by patient_id, hospital_id, (encounter_type = 'Inpatient')
+            order by admission_date, encounter_id
+        ) as lag_inpatient_discharge_date,
+
+        lag(encounter_id) over (
+            partition by patient_id, hospital_id, (encounter_type = 'Inpatient')
+            order by admission_date, encounter_id
+        ) as lag_inpatient_encounter_id
 
     from clean_data
 ),
@@ -128,25 +140,35 @@ cleaned as (
         total_charges,
 
         case
-            when encounter_type = 'Inpatient'  -- Current encounter is inpatient
-                and previous_encounter_type = 'Inpatient'  -- Previous was also inpatient
-                and previous_discharge_date is not null
-                and datediff('day', previous_discharge_date, admission_date) between 1 and 30
+            when encounter_type = 'Inpatient'
+                and lag_inpatient_discharge_date is not null
+                and datediff('day', lag_inpatient_discharge_date, admission_date) between 1 and 30
             then true
             else false
         end as is_readmission,
 
-        -- Store days since last discharge for analysis
+        -- Days since the previous encounter of any type
         case
             when previous_discharge_date is not null
             then datediff('day', previous_discharge_date, admission_date)
             else null
         end as days_since_last_discharge,
 
+        -- Days since the previous inpatient discharge (inpatient rows only)
+        case
+            when encounter_type = 'Inpatient' and lag_inpatient_discharge_date is not null
+            then datediff('day', lag_inpatient_discharge_date, admission_date)
+            else null
+        end as days_since_last_inpatient_discharge,
+
         -- Store previous encounter info for validation
         previous_encounter_id,
         previous_discharge_date,
         previous_encounter_type,
+        case when encounter_type = 'Inpatient' then lag_inpatient_encounter_id end
+            as previous_inpatient_encounter_id,
+        case when encounter_type = 'Inpatient' then lag_inpatient_discharge_date end
+            as previous_inpatient_discharge_date,
 
         -- Flags
         case

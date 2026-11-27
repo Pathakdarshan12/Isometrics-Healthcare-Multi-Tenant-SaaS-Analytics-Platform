@@ -5,7 +5,7 @@
     temperature_c=none,
     avpu_score=none
 ) %}
-/*
+{#
   Modified Early Warning Score (MEWS)
 
   Used for early detection of patient deterioration on general wards.
@@ -30,7 +30,7 @@
         temperature_c='temperature_celsius',
         avpu_score='avpu_score'
     ) }} as mews_score
-*/
+#}
 
 (
   -- Systolic Blood Pressure Score (0-3 points)
@@ -96,12 +96,12 @@
 
 
 {% macro mews_risk_category(score_column) %}
-/*
+{#
   Categorize MEWS score into risk/action levels
 
   Usage:
     {{ mews_risk_category('mews_score') }} as mews_risk_level
-*/
+#}
 
 case
   when {{ score_column }} >= 5 then 'Critical (Urgent medical review required)'

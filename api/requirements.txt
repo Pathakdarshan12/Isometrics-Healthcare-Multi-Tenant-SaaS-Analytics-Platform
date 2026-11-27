@@ -1,0 +1,8 @@
+fastapi==0.117.1
+uvicorn==0.40.0
+pydantic==2.12.5
+snowflake-connector-python==4.1.1
+python-dotenv==1.2.1
+# tests
+pytest==7.4.4
+httpx==0.28.1
