@@ -8,11 +8,29 @@ raw tables. There are two ways to do the last step:
 | Explicit `COPY INTO` | `scripts/load_data_to_snowflake.sql` | all 21 raw tables | Quick start, full loads |
 | Metadata-driven procedures | `scripts/metadata_driven_stage_to_raw.sql` | 9 sources configured (hospitals, patients, providers, facilities, diagnoses, procedures, payers, encounters, billing) | Config-driven batch/incremental loads with run logging |
 
-## End-to-end (from the repo root)
+## Scheduled incremental loads
+
+After the initial load, `orchestration/isometrics_orchestration.py` adds a new
+3-hour window of transactional data on every run (scheduled by
+`.github/workflows/pipeline_schedule.yml`). It writes
+`data_generation/batches/<tag>/<table>.parquet`, uploads to
+`@RAW_PHI.HEALTHCARE_DATA_STAGE/batches/<tag>/`, and builds each `COPY` from
+the raw DDL in `isometrics_healthcare_snowflake_setup.sql`, so a column added to
+the DDL is loaded automatically. A window already present in `raw_encounters`
+is skipped. Runs are logged to `AUDIT.PIPELINE_RUN_LOG`:
+
+```sql
+SELECT batch_tag, status, rows_loaded:encounters::int AS encounters, duration_seconds, error_message
+FROM AUDIT.PIPELINE_RUN_LOG ORDER BY started_at DESC LIMIT 20;
+```
+
+Only the 10 transactional feeds are refreshed this way; master-data tables are
+excluded from the freshness SLA (`freshness: null` in the source YAML).
+
+## Initial load (from the repo root)
 
 ```bash
-python data_generation/generate_data.py     # CSVs -> data_generation/2025/
-python utils/csv_to_parquet.py              # -> data_generation/parquet/
+python data_generation/generate_data.py     # Parquet -> data_generation/parquet/ (add --format both for CSV)
 python -m utils.upload_files_to_stage       # PUT -> @RAW_PHI.HEALTHCARE_DATA_STAGE/2023/
 snowsql -f scripts/load_data_to_snowflake.sql
 ```
@@ -25,8 +43,9 @@ upload.
 
 Each raw table has one `COPY INTO ... FROM (SELECT $1:col::TYPE ...)` block reading
 `@healthcare_data_stage/2023/<table>.parquet`, with `ON_ERROR = 'ABORT_STATEMENT'`.
-Casts are explicit because the Parquet files come from CSV, so dates and
-timestamps arrive as strings. DATE columns are cast through `TIMESTAMP_NTZ` to
+The generator writes typed Parquet conformed to the raw DDL (`data_generation/schema.py`).
+Casts stay explicit so Parquet produced from CSV (`utils/csv_to_parquet.py`, where dates
+arrive as strings) loads the same way. DATE columns are cast through `TIMESTAMP_NTZ` to
 tolerate a time part. `_loaded_at` is set to `CURRENT_TIMESTAMP()` at load.
 
 ## Metadata-driven path
@@ -80,7 +99,8 @@ configuration and run history.
 1. **DDL**: add `CREATE TABLE raw_<name>` to `scripts/isometrics_healthcare_snowflake_setup.sql`
    (include `hospital_id` if it's tenant-scoped, and `_loaded_at`).
 2. **Data**: add a generator method and a `main()` call in
-   `data_generation/generate_data.py`, and the CSV name in `utils/csv_to_parquet.py`.
+   `data_generation/generate_data.py` (vectorized, written through `schema.TableWriter`),
+   and the CSV name in `utils/csv_to_parquet.py` if you use the CSV route.
    Generated columns must match the DDL exactly.
 3. **Load**: add a `COPY INTO` block to `scripts/load_data_to_snowflake.sql`, and/or
    `SOURCE_FILE_CONFIG` / `FILE_COLUMN_MAPPING` / `RAW_TABLE_MAPPING` rows for the

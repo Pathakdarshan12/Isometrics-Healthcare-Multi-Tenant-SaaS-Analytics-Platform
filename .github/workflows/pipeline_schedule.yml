@@ -1,0 +1,97 @@
+name: Scheduled pipeline
+# Every 3 hours: generate the next window of data -> load RAW_PHI -> dbt build (prod).
+# A 3-hour cadence keeps source freshness inside the 4-hour warn / 6-hour error SLA,
+# with slack for GitHub's scheduling delays.
+#
+# Disabled until the repository variable PIPELINE_ENABLED is set to "true"
+# (Settings -> Secrets and variables -> Actions -> Variables). Manual runs always work.
+on:
+  schedule:
+    - cron: '15 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'Batch window length in hours'
+        required: false
+        default: '3'
+      dbt_only:
+        description: 'Skip generate/load; only run dbt'
+        type: boolean
+        default: false
+
+# Never overlap with another pipeline run or a production deploy
+concurrency:
+  group: snowflake-prod
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    name: Generate, load, transform
+    if: github.event_name == 'workflow_dispatch' || vars.PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 60
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_PROD_USER }}
+      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PROD_PASSWORD }}
+      SNOWFLAKE_ROLE: DBT_PROD_ROLE
+      SNOWFLAKE_WAREHOUSE: DBT_PROD_WH
+      SNOWFLAKE_DATABASE: ISOMETRICS_PROD
+      SNOWFLAKE_SCHEMA: RAW_PHI
+      DBT_RAW_DATABASE: ISOMETRICS_PROD
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: orchestration/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r orchestration/requirements.txt
+
+      - name: 🔧 Setup dbt profile
+        run: |
+          mkdir -p ~/.dbt
+          cat <<EOF > ~/.dbt/profiles.yml
+          isometrics_healthcare:
+            target: prod
+            outputs:
+              prod:
+                type: snowflake
+                account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+                user: ${{ secrets.SNOWFLAKE_PROD_USER }}
+                password: ${{ secrets.SNOWFLAKE_PROD_PASSWORD }}
+                role: DBT_PROD_ROLE
+                database: ISOMETRICS_PROD
+                warehouse: DBT_PROD_WH
+                schema: marts
+                threads: 8
+                query_tag: scheduled_pipeline
+          EOF
+
+      - name: Install dbt packages
+        run: cd isometrics_healthcare && dbt deps
+
+      - name: 🚀 Run pipeline
+        run: |
+          python -m orchestration.isometrics_orchestration \
+            --target prod \
+            --hours "${{ inputs.hours || '3' }}" \
+            ${{ inputs.dbt_only && '--dbt-only' || '' }}
+
+      - name: 📤 Upload dbt artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-dbt-artifacts-${{ github.run_id }}
+          path: |
+            isometrics_healthcare/target/run_results.json
+            isometrics_healthcare/target/sources.json
+            isometrics_healthcare/logs/dbt.log
+          if-no-files-found: ignore
