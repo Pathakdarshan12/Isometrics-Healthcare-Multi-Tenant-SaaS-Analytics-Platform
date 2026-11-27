@@ -494,17 +494,17 @@ PAYERS = [
     {'payer_name': 'Employer Coalition Health Plan', 'payer_type': 'Self-Funded', 'reimbursement_rate': 0.93},
     {'payer_name': 'Multi-Employer Benefits Fund', 'payer_type': 'Self-Funded', 'reimbursement_rate': 0.91},
 
-    # Workers Compensation - Higher rates for work-related injuries
-    {'payer_name': 'State Workers Compensation Fund', 'payer_type': 'Workers Comp', 'reimbursement_rate': 1.10},
-    {'payer_name': 'Industrial Injury Insurance', 'payer_type': 'Workers Comp', 'reimbursement_rate': 1.15},
-    {'payer_name': 'Occupational Health Coverage', 'payer_type': 'Workers Comp', 'reimbursement_rate': 1.12},
-    {'payer_name': 'Workplace Injury Protection', 'payer_type': 'Workers Comp', 'reimbursement_rate': 1.13},
+    # Workers Compensation - highest rates (fraction of billed charges, so <= 1.0)
+    {'payer_name': 'State Workers Compensation Fund', 'payer_type': 'Workers Comp', 'reimbursement_rate': 0.96},
+    {'payer_name': 'Industrial Injury Insurance', 'payer_type': 'Workers Comp', 'reimbursement_rate': 0.98},
+    {'payer_name': 'Occupational Health Coverage', 'payer_type': 'Workers Comp', 'reimbursement_rate': 0.97},
+    {'payer_name': 'Workplace Injury Protection', 'payer_type': 'Workers Comp', 'reimbursement_rate': 0.97},
 
-    # Auto/Liability Insurance - Higher rates
-    {'payer_name': 'Auto Medical Coverage Inc', 'payer_type': 'Auto/Liability', 'reimbursement_rate': 1.20},
-    {'payer_name': 'Personal Injury Medical Fund', 'payer_type': 'Auto/Liability', 'reimbursement_rate': 1.18},
-    {'payer_name': 'Liability Medical Insurance', 'payer_type': 'Auto/Liability', 'reimbursement_rate': 1.25},
-    {'payer_name': 'Accident Medical Protection', 'payer_type': 'Auto/Liability', 'reimbursement_rate': 1.22},
+    # Auto/Liability Insurance - near full charges
+    {'payer_name': 'Auto Medical Coverage Inc', 'payer_type': 'Auto/Liability', 'reimbursement_rate': 0.99},
+    {'payer_name': 'Personal Injury Medical Fund', 'payer_type': 'Auto/Liability', 'reimbursement_rate': 0.98},
+    {'payer_name': 'Liability Medical Insurance', 'payer_type': 'Auto/Liability', 'reimbursement_rate': 1.00},
+    {'payer_name': 'Accident Medical Protection', 'payer_type': 'Auto/Liability', 'reimbursement_rate': 0.99},
 
     # Other Payer Types
     {'payer_name': 'Self-Pay', 'payer_type': 'Self-Pay', 'reimbursement_rate': 0.30},

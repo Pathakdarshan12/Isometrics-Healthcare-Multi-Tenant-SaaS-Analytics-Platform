@@ -16,6 +16,12 @@
   Expected Result: 100% verification rate for high-risk medications
 */
 
+-- Clinical safety surveillance: flags events in the source data for review (rows are
+-- stored in the test_failures schema). Warn, don't fail: a missed scan at a hospital
+-- is a finding to act on, not a pipeline defect that should block deploys.
+{{ config(severity='warn') }}
+
+
 with med_admin as (
     select
         admin_id,

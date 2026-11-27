@@ -65,6 +65,21 @@ med_with_allergy_check as (
             lower(ma.medication_name) like '%' || lower(a.allergen_name) || '%'
             or lower(a.allergen_name) like '%' || lower(ma.medication_name) || '%'
         )
+    -- A patient can have several active allergies matching one drug (e.g. duplicate
+    -- Penicillin records): keep one row per administration, the most severe match,
+    -- so admin_id stays unique downstream.
+    qualify row_number() over (
+        partition by ma.admin_id, ma.hospital_id
+        order by
+            case a.severity
+                when 'LIFE_THREATENING' then 1
+                when 'SEVERE' then 2
+                when 'MODERATE' then 3
+                when 'MILD' then 4
+                else 5
+            end,
+            a.allergy_id
+    ) = 1
 ),
 
 enriched as (

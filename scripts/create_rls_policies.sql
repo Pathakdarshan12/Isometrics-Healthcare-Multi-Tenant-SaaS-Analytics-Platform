@@ -1,256 +1,138 @@
 -- ============================================
--- CREATE HIPAA-COMPLIANT RLS POLICIES
+-- RLS on the raw layer + analyst / auditor roles
+-- ============================================
+-- Run as ACCOUNTADMIN AFTER `dbt run-operation setup_rls_policies` (and, for
+-- the analyst grants, after the first `dbt run`). Idempotent: safe to rerun,
+-- e.g. once more after the first production deploy to cover ISOMETRICS_PROD.
+--
+-- The policies themselves are NOT defined here. They live in
+-- isometrics_healthcare/macros/setup_rls_policies.sql and are created (and kept
+-- in sync) by dbt in <DB>.RAW_PHI as HOSPITAL_ISOLATION_POLICY and
+-- PHI_ACCESS_POLICY. This script only:
+--   1. attaches those policies to the raw tables (defense in depth: dbt
+--      already attaches them to every staging view and mart)
+--   2. creates example tenant roles and the HIPAA auditor role
+--
+-- ACCOUNTADMIN owns the raw tables and inherits the dbt roles (which own the
+-- policies), so it holds both privileges ALTER TABLE ... ADD ROW ACCESS POLICY needs.
 -- ============================================
 USE ROLE ACCOUNTADMIN;
+USE WAREHOUSE DBT_DEV_WH;
 
 -- ============================================
--- SECURE MAPPING TABLE FOR DEV TESTING
+-- 1. ATTACH POLICIES TO RAW TABLES
 -- ============================================
+-- raw_patients gets the stricter PHI policy; every other tenant-scoped table
+-- gets hospital isolation. Reference tables (diagnoses, procedures, payers)
+-- have no hospital_id and stay unrestricted.
+-- Tables that already have a policy, and databases whose policies don't exist
+-- yet, are skipped and reported instead of failing the script.
+EXECUTE IMMEDIATE $$
+DECLARE
+  attached INTEGER DEFAULT 0;
+  report VARCHAR DEFAULT '';
+  stmt VARCHAR;
+  targets CURSOR FOR
+    SELECT d.column1 AS db, t.column1 AS tbl,
+           IFF(t.column1 = 'RAW_PATIENTS', 'PHI_ACCESS_POLICY', 'HOSPITAL_ISOLATION_POLICY') AS pol
+    FROM (VALUES ('ISOMETRICS_DEV'), ('ISOMETRICS_PROD')) d,
+         (VALUES ('RAW_HOSPITALS'), ('RAW_PATIENTS'), ('RAW_PROVIDERS'), ('RAW_FACILITIES'),
+                 ('RAW_ENCOUNTERS'), ('RAW_BILLING_TRANSACTIONS'), ('RAW_CLINICAL_ORDERS'),
+                 ('RAW_CLINICAL_RESULTS'), ('RAW_VITAL_SIGNS'), ('RAW_PROBLEM_LIST'),
+                 ('RAW_MEDICATION_ADMINISTRATION'), ('RAW_PATIENT_ALLERGIES'), ('RAW_CARE_PLANS'),
+                 ('RAW_PATIENT_COVERAGE'), ('RAW_PRIOR_AUTHORIZATIONS'), ('RAW_SDOH_SCREENINGS'),
+                 ('RAW_QUALITY_MEASURES'), ('RAW_REFERRALS')) t;
+BEGIN
+  FOR rec IN targets DO
+    stmt := 'ALTER TABLE ' || rec.db || '.RAW_PHI.' || rec.tbl ||
+            ' ADD ROW ACCESS POLICY ' || rec.db || '.RAW_PHI.' || rec.pol || ' ON (hospital_id)';
+    BEGIN
+      EXECUTE IMMEDIATE :stmt;
+      attached := attached + 1;
+    EXCEPTION
+      WHEN STATEMENT_ERROR THEN
+        report := report || rec.db || '.' || rec.tbl || ': ' || SQLERRM || '\n';
+    END;
+  END FOR;
+  RETURN 'Attached ' || attached || ' policies. Skipped:\n' || report;
+END;
+$$;
 
--- Create mapping table in AUDIT schema
-CREATE OR REPLACE TABLE ISOMETRICS_DEV.AUDIT.user_hospital_mapping (
-    user_name VARCHAR(255),
-    role_name VARCHAR(255),
-    hospital_id VARCHAR(50),
-    access_start_date DATE,
-    access_end_date DATE,
-    access_reason VARCHAR(1000),
-    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    created_by VARCHAR(255) DEFAULT CURRENT_USER(),
-    PRIMARY KEY (user_name, role_name, hospital_id)
-) COMMENT = 'User to hospital access mapping - HIPAA audited';
+-- Check: one row per raw table that has a policy
+SELECT policy_name, ref_entity_name
+FROM TABLE(ISOMETRICS_DEV.INFORMATION_SCHEMA.POLICY_REFERENCES(
+    ref_entity_name => 'ISOMETRICS_DEV.RAW_PHI.RAW_ENCOUNTERS', ref_entity_domain => 'table'));
 
--- ============================================
--- INSERT DEV MAPPINGS
--- ============================================
-
--- Map DBT_USER to all hospitals in DEV for testing
--- INSERT INTO ISOMETRICS_DEV.AUDIT.user_hospital_mapping
--- SELECT
---     'DBT_USER' as user_name,
---     'DBT_DEV_ROLE' as role_name,
---     hospital_id,
---     '2025-01-01' as access_start_date,
---     '2025-12-31' as access_end_date,
---     'DEV environment - Full access for testing' as access_reason,
---     CURRENT_TIMESTAMP() as created_at,
---     CURRENT_USER() as created_by
--- FROM ISOMETRICS_DEV.RAW_PHI.raw_hospitals
--- WHERE is_active = TRUE;
-
--- Verify mappings
-SELECT * FROM ISOMETRICS_DEV.AUDIT.user_hospital_mapping;
-
--- ============================================
--- UPDATED RLS POLICY (NO SESSION VARIABLES)
--- ============================================
-CREATE OR REPLACE ROW ACCESS POLICY hospital_isolation_policy
-AS (hospital_id VARCHAR) RETURNS BOOLEAN ->
-  CASE
-    -- ACCOUNTADMIN and SYSADMIN see everything (break-glass)
-    WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN', 'SYSADMIN') THEN TRUE
-
-    -- DBT_DEV_ROLE: Use mapping table instead of blanket access
-   WHEN CURRENT_ROLE() = 'DBT_DEV_ROLE' AND
-         (CURRENT_DATABASE() = 'ISOMETRICS_DEV' OR CURRENT_DATABASE() LIKE '%_DEV')
-    THEN TRUE
-
-    -- HIPAA auditors - see everything (read-only)
-    WHEN CURRENT_ROLE() = 'HIPAA_AUDITOR' THEN TRUE
-
-    -- Hospital-specific analyst roles (role name contains hospital_id)
-    WHEN CURRENT_ROLE() LIKE 'HOSPITAL_%_ANALYST' THEN
-      hospital_id = REGEXP_REPLACE(CURRENT_ROLE(), 'HOSPITAL_(.*)_ANALYST', '\\1')
-
-    -- Generic hospital analyst (uses mapping table)
-    WHEN CURRENT_ROLE() = 'HOSPITAL_ANALYST' THEN
-      -- Derived table renames the column: an unqualified hospital_id inside a
-      -- subquery binds to the table's column (always true), not the policy arg.
-      EXISTS (
-        SELECT 1
-        FROM (
-          SELECT hospital_id AS mapped_hospital_id, user_name, access_start_date, access_end_date
-          FROM ISOMETRICS_DEV.AUDIT.user_hospital_mapping
-        ) m
-        WHERE m.user_name = CURRENT_USER()
-          AND m.mapped_hospital_id = hospital_id
-          AND CURRENT_DATE() BETWEEN m.access_start_date AND m.access_end_date
-      )
-
-    -- Production dbt role (blanket access in prod)
-    WHEN CURRENT_ROLE() = 'DBT_PROD_ROLE' AND
-         CURRENT_DATABASE() LIKE '%_PROD' THEN TRUE
-
-    -- Default: DENY (fail-secure)
-    ELSE FALSE
-  END
-COMMENT = 'HIPAA-compliant hospital isolation - All access logged - No session variables';
-
--- Policy 2: PHI Access Control
-CREATE OR REPLACE ROW ACCESS POLICY phi_access_policy
-AS (hospital_id VARCHAR) RETURNS BOOLEAN ->
-  CASE
-    WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN', 'PHI_ADMIN', 'HIPAA_AUDITOR') THEN TRUE
-
-    WHEN CURRENT_ROLE() = 'DBT_DEV_ROLE' AND
-         (CURRENT_DATABASE() = 'ISOMETRICS_DEV' OR CURRENT_DATABASE() LIKE '%_DEV')
-    THEN TRUE
-
-    WHEN CURRENT_ROLE() LIKE 'HOSPITAL_%_PHI_ANALYST' THEN
-      hospital_id = REGEXP_REPLACE(CURRENT_ROLE(), 'HOSPITAL_(.*)_PHI_ANALYST', '\\1')
-
-    ELSE FALSE
-  END
-COMMENT = 'Restricted PHI access - Requires explicit authorization';
-
--- Apply RLS policies
-ALTER TABLE raw_patients
-ADD ROW ACCESS POLICY phi_access_policy ON (hospital_id);
-
-ALTER TABLE raw_encounters
-ADD ROW ACCESS POLICY hospital_isolation_policy ON (hospital_id);
-
-ALTER TABLE raw_billing_transactions
-ADD ROW ACCESS POLICY hospital_isolation_policy ON (hospital_id);
-
-ALTER TABLE raw_providers
-ADD ROW ACCESS POLICY hospital_isolation_policy ON (hospital_id);
-
-ALTER TABLE raw_facilities
-ADD ROW ACCESS POLICY hospital_isolation_policy ON (hospital_id);
-
--- Remove RLS policies
--- ALTER TABLE raw_providers
--- DROP ROW ACCESS POLICY hospital_isolation_policy;
-
--- ALTER TABLE raw_patients
--- DROP ROW ACCESS POLICY phi_access_policy;
-
--- ALTER TABLE raw_encounters
--- DROP ROW ACCESS POLICY hospital_isolation_policy;
-
--- ALTER TABLE raw_billing_transactions
--- DROP ROW ACCESS POLICY hospital_isolation_policy;
-
--- ALTER TABLE raw_providers
--- DROP ROW ACCESS POLICY hospital_isolation_policy;
-
--- ALTER TABLE raw_facilities
--- DROP ROW ACCESS POLICY hospital_isolation_policy;
-
--- DROP ROW ACCESS POLICY phi_access_policy;
--- DROP ROW ACCESS POLICY hospital_isolation_policy;
-
-
--- Grant ownership or apply privileges
-GRANT OWNERSHIP ON ROW ACCESS POLICY hospital_isolation_policy TO ROLE DBT_DEV_ROLE;
-GRANT APPLY ON ROW ACCESS POLICY hospital_isolation_policy TO ROLE DBT_DEV_ROLE;
-
--- Grant ownership or apply privileges
-GRANT OWNERSHIP ON ROW ACCESS POLICY phi_access_policy TO ROLE DBT_DEV_ROLE;
-GRANT APPLY ON ROW ACCESS POLICY phi_access_policy TO ROLE DBT_DEV_ROLE;
-
-
-show row access policies;
+-- To detach (e.g. before dropping a table):
+--   ALTER TABLE ISOMETRICS_DEV.RAW_PHI.RAW_ENCOUNTERS DROP ROW ACCESS POLICY ISOMETRICS_DEV.RAW_PHI.HOSPITAL_ISOLATION_POLICY;
 
 -- ============================================
--- CREATE AUDIT SCHEMA & TABLES
+-- 2. TENANT ANALYST ROLES (dev examples)
 -- ============================================
+-- HOSPITAL_<id>_ANALYST sees only <id>'s rows (the policy parses the role name).
+-- Granted to DBT_USER so the API / dashboard can switch to them in dev.
+-- dbt builds dev marts into DBT_DEV_MARTS (profile schema DBT_DEV + layer).
+CREATE ROLE IF NOT EXISTS HOSPITAL_HOSP_0001_ANALYST COMMENT = 'Analyst for hospital HOSP_0001';
+CREATE ROLE IF NOT EXISTS HOSPITAL_HOSP_0002_ANALYST COMMENT = 'Analyst for hospital HOSP_0002';
+-- Generic analyst: hospitals come from AUDIT.user_hospital_mapping
+CREATE ROLE IF NOT EXISTS HOSPITAL_ANALYST COMMENT = 'Analyst; hospitals granted via AUDIT.user_hospital_mapping';
 
-USE SCHEMA AUDIT;
+EXECUTE IMMEDIATE $$
+DECLARE
+  stmt VARCHAR;
+  grants CURSOR FOR
+    SELECT REPLACE(g.column1, '{role}', r.column1) AS sql_text
+    FROM (VALUES ('HOSPITAL_HOSP_0001_ANALYST'), ('HOSPITAL_HOSP_0002_ANALYST'), ('HOSPITAL_ANALYST')) r,
+         (VALUES ('GRANT USAGE ON WAREHOUSE DBT_DEV_WH TO ROLE {role}'),
+                 ('GRANT USAGE ON DATABASE ISOMETRICS_DEV TO ROLE {role}'),
+                 ('GRANT USAGE ON SCHEMA ISOMETRICS_DEV.DBT_DEV_MARTS TO ROLE {role}'),
+                 ('GRANT SELECT ON ALL TABLES IN SCHEMA ISOMETRICS_DEV.DBT_DEV_MARTS TO ROLE {role}'),
+                 ('GRANT SELECT ON FUTURE TABLES IN SCHEMA ISOMETRICS_DEV.DBT_DEV_MARTS TO ROLE {role}'),
+                 ('GRANT ROLE {role} TO USER DBT_USER'),        -- API / dashboard switch to it
+                 ('GRANT ROLE {role} TO ROLE ACCOUNTADMIN')) g;  -- lets you USE ROLE it below
+BEGIN
+  FOR rec IN grants DO
+    stmt := rec.sql_text;
+    EXECUTE IMMEDIATE :stmt;
+  END FOR;
+  RETURN 'Analyst roles granted on ISOMETRICS_DEV.DBT_DEV_MARTS';
+END;
+$$;
 
--- Access audit log (HIPAA requirement)
-CREATE TABLE IF NOT EXISTS access_audit_log (
-    audit_id NUMBER AUTOINCREMENT PRIMARY KEY,
-    access_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    user_name VARCHAR(255),
-    role_name VARCHAR(255),
-    database_name VARCHAR(255),
-    schema_name VARCHAR(255),
-    table_name VARCHAR(255),
-    query_text VARCHAR(10000),
-    rows_accessed NUMBER,
-    hospital_id VARCHAR(50),
-    session_id VARCHAR(255),
-    client_ip VARCHAR(50),
-    access_reason VARCHAR(1000)  -- Required for break-glass access
-) COMMENT = 'HIPAA audit trail - All PHI access logged';
-
--- Query history for compliance
-CREATE OR REPLACE VIEW query_audit_view AS
-SELECT
-    query_id,
-    query_text,
-    user_name,
-    role_name,
-    start_time,
-    end_time,
-    total_elapsed_time,
-    rows_produced,
-    database_name,
-    schema_name
-FROM snowflake.account_usage.query_history
-WHERE schema_name IN ('RAW_PHI', 'STAGING', 'MARTS')
-  AND start_time >= DATEADD('day', -90, CURRENT_TIMESTAMP())
-ORDER BY start_time DESC;
+-- The policy subquery reads the mapping table as the policy owner (DBT_DEV_ROLE),
+-- so HOSPITAL_ANALYST itself needs no grant on it.
+MERGE INTO ISOMETRICS_DEV.AUDIT.user_hospital_mapping t
+USING (
+    SELECT 'DBT_USER' AS user_name, 'HOSPITAL_ANALYST' AS role_name, column1 AS hospital_id
+    FROM VALUES ('HOSP_0003'), ('HOSP_0004')
+) s
+ON t.user_name = s.user_name AND t.role_name = s.role_name AND t.hospital_id = s.hospital_id
+WHEN NOT MATCHED THEN INSERT
+    (user_name, role_name, hospital_id, access_start_date, access_end_date, access_reason)
+    VALUES (s.user_name, s.role_name, s.hospital_id, '2024-01-01', '2099-12-31', 'Dev example mapping');
 
 -- ============================================
--- CREATE HOSPITAL-SPECIFIC ROLES (Examples)
+-- 3. HIPAA AUDITOR (read-only, sees every tenant)
 -- ============================================
-
--- Create sample hospital analyst roles
-CREATE ROLE IF NOT EXISTS HOSPITAL_HOSP_0001_ANALYST COMMENT = 'Analyst role for Hospital HOSP_0001';
-CREATE ROLE IF NOT EXISTS HOSPITAL_HOSP_0002_ANALYST COMMENT = 'Analyst role for Hospital HOSP_0002';
-
--- Grant basic permissions
-GRANT USAGE ON DATABASE ISOMETRICS_DEV TO ROLE HOSPITAL_HOSP_0001_ANALYST;
-GRANT USAGE ON SCHEMA ISOMETRICS_DEV.STAGING TO ROLE HOSPITAL_HOSP_0001_ANALYST;
-GRANT USAGE ON SCHEMA ISOMETRICS_DEV.MARTS TO ROLE HOSPITAL_HOSP_0001_ANALYST;
-GRANT USAGE ON WAREHOUSE DBT_DEV_WH TO ROLE HOSPITAL_HOSP_0001_ANALYST;
-
-GRANT ROLE HOSPITAL_HOSP_0001_ANALYST TO ROLE ACCOUNTADMIN;
-GRANT ROLE HOSPITAL_HOSP_0002_ANALYST TO ROLE ACCOUNTADMIN;
-
-DESC TABLE ISOMETRICS_DEV.AUDIT.user_hospital_mapping;
-
-
-INSERT INTO ISOMETRICS_DEV.AUDIT.user_hospital_mapping(USER_NAME, ROLE_NAME, HOSPITAL_ID, ACCESS_START_DATE, ACCESS_END_DATE, ACCESS_REASON, CREATED_AT, CREATED_BY) VALUES
-('DBT_USER', 'HOSPITAL_HOSP_0001_ANALYST', 'HOSP_0001', '2026-01-01', '2026-12-31','HOSP_0001 Analyst',CURRENT_TIMESTAMP(), CURRENT_USER()),
-('DBT_USER', 'HOSPITAL_HOSP_0002_ANALYST', 'HOSP_0002', '2026-01-01', '2026-12-31','HOSP_0002 Analyst',CURRENT_TIMESTAMP(), CURRENT_USER());
-
--- Create HIPAA auditor role
-CREATE ROLE IF NOT EXISTS HIPAA_AUDITOR
-  COMMENT = 'Federal/regulatory auditor - read-only access with logging';
-
+CREATE ROLE IF NOT EXISTS HIPAA_AUDITOR COMMENT = 'Regulatory auditor - read-only, all tenants';
+GRANT USAGE ON WAREHOUSE DBT_DEV_WH TO ROLE HIPAA_AUDITOR;
 GRANT USAGE ON DATABASE ISOMETRICS_DEV TO ROLE HIPAA_AUDITOR;
 GRANT USAGE ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE HIPAA_AUDITOR;
 GRANT SELECT ON ALL TABLES IN SCHEMA ISOMETRICS_DEV.AUDIT TO ROLE HIPAA_AUDITOR;
-GRANT USAGE ON WAREHOUSE DBT_DEV_WH TO ROLE HIPAA_AUDITOR;
+GRANT SELECT ON ALL TABLES IN SCHEMA ISOMETRICS_DEV.DBT_DEV_MARTS TO ROLE HIPAA_AUDITOR;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA ISOMETRICS_DEV.DBT_DEV_MARTS TO ROLE HIPAA_AUDITOR;
 
 -- ============================================
--- VERIFICATION QUERIES
+-- 4. VERIFY ISOLATION
 -- ============================================
-
--- Check RLS policies
-SHOW ROW ACCESS POLICIES;
-
--- Check table row access policies
-SELECT
-    policy_name,
-    ref_database_name,
-    ref_schema_name,
-    ref_entity_name,
-    ref_entity_domain
-FROM snowflake.account_usage.policy_references
-WHERE ref_entity_domain = 'TABLE'
-ORDER BY ref_schema_name, ref_entity_name;
-
--- Test data isolation
+-- Expect: every tenant as ACCOUNTADMIN, exactly one as the HOSP_0001 analyst,
+-- HOSP_0003/HOSP_0004 as HOSPITAL_ANALYST (when run as DBT_USER; as your own
+-- user the mapping has no rows, so expect zero).
 USE ROLE ACCOUNTADMIN;
-SELECT hospital_id, COUNT(*) as patient_count
-FROM raw_phi.raw_patients
-GROUP BY hospital_id
-ORDER BY patient_count DESC
-LIMIT 10;
+SELECT COUNT(DISTINCT hospital_id) AS hospitals_visible FROM ISOMETRICS_DEV.DBT_DEV_MARTS.fct_encounters;
 
-SELECT 'Healthcare Snowflake setup complete!' AS status, 'Remember: All PHI access is audited and logged' AS reminder;
+USE ROLE HOSPITAL_HOSP_0001_ANALYST;
+SELECT hospital_id, COUNT(*) AS encounters FROM ISOMETRICS_DEV.DBT_DEV_MARTS.fct_encounters GROUP BY 1;
+
+USE ROLE ACCOUNTADMIN;
+SELECT 'RLS setup complete' AS status;

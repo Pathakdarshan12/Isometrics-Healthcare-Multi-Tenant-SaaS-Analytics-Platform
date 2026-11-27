@@ -6,6 +6,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import snowflake.connector
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root, for utils/
+from utils.snowflake_auth import auth_params  # noqa: E402
 from typing import Dict, List
 
 # Page configuration
@@ -21,7 +26,7 @@ def init_connection():
     """Initialize Snowflake connection"""
     return snowflake.connector.connect(
         user = os.getenv('SNOWFLAKE_USER'),
-        password = os.getenv('SNOWFLAKE_PASSWORD'),
+        **auth_params(),
         account = os.getenv('SNOWFLAKE_ACCOUNT'),
         warehouse = os.getenv('SNOWFLAKE_WAREHOUSE'),
         database = os.getenv('SNOWFLAKE_DATABASE'),
@@ -62,9 +67,10 @@ def load_clinical_metrics(hospital_id: str = None, days: int = 30) -> pd.DataFra
         high_risk_patients,
         medium_risk_patients,
         low_risk_patients
-    FROM fct_clinical_quality_metrics
+    FROM ISOMETRICS_DEV.DBT_DEV_MARTS.fct_clinical_quality_metrics
+    WHERE 1 = 1
     """
-    # WHERE metric_date >= DATEADD('day', -{days}, CURRENT_DATE())
+    # AND metric_date >= DATEADD('day', -{days}, CURRENT_DATE())
 
     if hospital_id and hospital_id != "All Hospitals":
         query += f" AND hospital_id = '{hospital_id}'"
@@ -161,14 +167,18 @@ st.subheader("📈 30-Day Readmission Rate Trend")
 
 fig_readmission = go.Figure()
 
-# Add readmission rate line
-fig_readmission.add_trace(go.Scatter(
-    x=df_metrics['metric_date'],
-    y=df_metrics['readmission_rate_30day_pct'],
-    mode='lines+markers',
-    name='Readmission Rate',
-    line=dict(color='#FF6B6B', width=3)
-))
+# One line per hospital: the frame has a row per hospital per day, so a single
+# trace would zig-zag between hospitals on each date.
+df_trend = df_metrics.sort_values('metric_date')
+multi_hospital = df_trend['hospital_id'].nunique() > 1
+for hosp, df_h in df_trend.groupby('hospital_id'):
+    fig_readmission.add_trace(go.Scatter(
+        x=df_h['metric_date'],
+        y=df_h['readmission_rate_30day_pct'],
+        mode='lines+markers',
+        name=hosp if multi_hospital else 'Readmission Rate',
+        line=dict(width=3) if multi_hospital else dict(color='#FF6B6B', width=3)
+    ))
 
 # Add CMS benchmark line
 fig_readmission.add_hline(
@@ -196,21 +206,32 @@ with col_left:
 
     fig_los = go.Figure()
 
-    fig_los.add_trace(go.Scatter(
-        x=df_metrics['metric_date'],
-        y=df_metrics['avg_length_of_stay'],
-        mode='lines',
-        name='Average LOS',
-        line=dict(color='#4ECDC4', width=2)
-    ))
+    if multi_hospital:
+        # average LOS per hospital; median lines would double the clutter
+        for hosp, df_h in df_trend.groupby('hospital_id'):
+            fig_los.add_trace(go.Scatter(
+                x=df_h['metric_date'],
+                y=df_h['avg_length_of_stay'],
+                mode='lines',
+                name=f'{hosp} avg LOS',
+                line=dict(width=2)
+            ))
+    else:
+        fig_los.add_trace(go.Scatter(
+            x=df_trend['metric_date'],
+            y=df_trend['avg_length_of_stay'],
+            mode='lines',
+            name='Average LOS',
+            line=dict(color='#4ECDC4', width=2)
+        ))
 
-    fig_los.add_trace(go.Scatter(
-        x=df_metrics['metric_date'],
-        y=df_metrics['median_length_of_stay'],
-        mode='lines',
-        name='Median LOS',
-        line=dict(color='#95E1D3', width=2, dash='dash')
-    ))
+        fig_los.add_trace(go.Scatter(
+            x=df_trend['metric_date'],
+            y=df_trend['median_length_of_stay'],
+            mode='lines',
+            name='Median LOS',
+            line=dict(color='#95E1D3', width=2, dash='dash')
+        ))
 
     fig_los.update_layout(
         xaxis_title="Date",

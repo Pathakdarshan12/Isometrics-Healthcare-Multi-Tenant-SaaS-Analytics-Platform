@@ -6,6 +6,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import snowflake.connector
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root, for utils/
+from utils.snowflake_auth import auth_params  # noqa: E402
 from typing import Dict
 
 # Page configuration
@@ -21,7 +26,7 @@ def init_connection():
     """Initialize Snowflake connection"""
     return snowflake.connector.connect(
         user = os.getenv('SNOWFLAKE_USER'),
-        password = os.getenv('SNOWFLAKE_PASSWORD'),
+        **auth_params(),
         account = os.getenv('SNOWFLAKE_ACCOUNT'),
         warehouse = os.getenv('SNOWFLAKE_WAREHOUSE'),
         database = os.getenv('SNOWFLAKE_DATABASE'),

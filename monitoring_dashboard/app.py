@@ -10,6 +10,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import matplotlib.pyplot as plt
 import snowflake.connector
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root, for utils/
+from utils.snowflake_auth import auth_params  # noqa: E402
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
@@ -62,7 +67,7 @@ def init_connection():
     """Initialize Snowflake connection"""
     return snowflake.connector.connect(
         user = os.getenv('SNOWFLAKE_USER'),
-        password = os.getenv('SNOWFLAKE_PASSWORD'),
+        **auth_params(),
         account = os.getenv('SNOWFLAKE_ACCOUNT'),
         warehouse = os.getenv('SNOWFLAKE_WAREHOUSE'),
         database = os.getenv('SNOWFLAKE_DATABASE'),

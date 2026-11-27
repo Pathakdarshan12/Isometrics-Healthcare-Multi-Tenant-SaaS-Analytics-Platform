@@ -2,7 +2,7 @@
 -- CRITICAL for RLS enforcement: the row access policy is attached ON (hospital_id).
 --
 -- Built from the dbt graph so it checks the schemas the current target actually
--- builds into (e.g. DBT_DEV_MARTS, MARTS_MARTS) instead of a hard-coded name.
+-- builds into (e.g. DBT_DEV_MARTS, DBT_PROD_MARTS) instead of a hard-coded name.
 -- Reference lookups (staging/reference) have no hospital_id and are excluded.
 -- Returns one row per model missing the column. Expected: zero rows.
 

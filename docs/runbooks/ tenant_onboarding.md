@@ -5,7 +5,7 @@ This document outlines the process for onboarding a new hospital tenant to the I
 
 > **Conventions.** `MARTS` / `STAGING` below mean the dbt marts and staging schemas for
 > the target. With dbt's default schema naming they are `<target schema>_MARTS` /
-> `<target schema>_STAGING` (prod: `MARTS_MARTS`, dev: `DBT_DEV_MARTS`); see
+> `<target schema>_STAGING` (prod: `DBT_PROD_MARTS`, dev: `DBT_DEV_MARTS`); see
 > [data_model.md](../architecture/data_model.md#schema-naming). Tenant isolation is the
 > `RAW_PHI.HOSPITAL_ISOLATION_POLICY` row access policy, explained in
 > [rls_implementation.md](../architecture/rls_implementation.md).

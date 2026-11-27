@@ -5,6 +5,7 @@ tqdm==4.67.1
 pyarrow==22.0.0
 snowflake-connector-python==4.1.1
 python-dotenv==1.2.1
+dbt-core==1.11.2
 dbt-snowflake==1.11.0
 # tests
 pytest==7.4.4

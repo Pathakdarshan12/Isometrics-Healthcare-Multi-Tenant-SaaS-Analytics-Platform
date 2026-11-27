@@ -1,197 +1,113 @@
 -- ============================================
--- IsoMetrics Healthcare: Snowflake Setup
+-- IsoMetrics Healthcare: Snowflake account bootstrap
 -- ============================================
--- Run this script in Snowflake Worksheet as ACCOUNTADMIN
+-- Run once as ACCOUNTADMIN (Snowsight worksheet -> "Run All", or
+-- snow sql -f / snowsql -f). Idempotent: every statement is
+-- CREATE ... IF NOT EXISTS or a GRANT, so rerunning never drops data.
+--
+-- Creates:
+--   warehouses  DBT_DEV_WH, DBT_CI_WH, DBT_PROD_WH
+--   roles       DBT_DEV_ROLE, DBT_CI_ROLE, DBT_PROD_ROLE
+--   users       DBT_USER (dev + CI), DBT_PROD_USER (prod + scheduled pipeline)
+--   databases   ISOMETRICS_DEV, ISOMETRICS_CI, ISOMETRICS_PROD
+--   RAW_PHI + AUDIT schemas, the 21 raw tables, file formats and the stage
+--   in ISOMETRICS_DEV and ISOMETRICS_PROD
+--
+-- Ownership model: ACCOUNTADMIN owns the raw layer; each dbt role gets only
+-- what it needs (read/insert raw, create its own schemas, create the row
+-- access policies in RAW_PHI). dbt roles own everything dbt builds.
+--
+-- After this script: set the users' RSA public keys (section 4), then follow
+-- docs/setup/snowflake_setup.md.
+-- ============================================
 USE ROLE ACCOUNTADMIN;
 
 -- ============================================
--- 1. CREATE DATABASES
+-- 1. WAREHOUSES
 -- ============================================
-
--- Development Database
-CREATE DATABASE IF NOT EXISTS ISOMETRICS_DEV
-  COMMENT = 'IsoMetrics Development Environment';
-
--- Production Database
-CREATE DATABASE IF NOT EXISTS ISOMETRICS_PROD
-  COMMENT = 'IsoMetrics Production Environment';
-
--- CI Database (for automated testing)
-CREATE DATABASE IF NOT EXISTS ISOMETRICS_CI
-  COMMENT = 'IsoMetrics CI/CD Testing Environment';
-
-USE DATABASE ISOMETRICS_DEV;
-
--- ============================================
--- 2. CREATE HEALTHCARE SCHEMAS
--- ============================================
-
--- Raw data landing (PHI present, restricted access)
-CREATE SCHEMA IF NOT EXISTS RAW_PHI
-  COMMENT = 'Raw healthcare data - Contains PHI - Restricted Access';
-
--- Audit logs (HIPAA requirement)
-CREATE SCHEMA IF NOT EXISTS AUDIT
-  COMMENT = 'HIPAA audit trail and access logs';
-
--- ============================================
--- 3. CREATE WAREHOUSES
--- ============================================
-
--- Development warehouse (smaller, auto-suspend quickly)
 CREATE WAREHOUSE IF NOT EXISTS DBT_DEV_WH
-  WITH
-  WAREHOUSE_SIZE = 'XSMALL'
-  AUTO_SUSPEND = 60
-  AUTO_RESUME = TRUE
-  INITIALLY_SUSPENDED = TRUE
+  WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE
   COMMENT = 'Development warehouse for dbt';
 
--- Production warehouse (larger, better performance)
-CREATE WAREHOUSE IF NOT EXISTS DBT_PROD_WH
-  WITH
-  WAREHOUSE_SIZE = 'SMALL'
-  AUTO_SUSPEND = 60
-  AUTO_RESUME = TRUE
-  INITIALLY_SUSPENDED = TRUE
-  COMMENT = 'Production warehouse for dbt';
-
--- CI warehouse (ephemeral, cheapest)
 CREATE WAREHOUSE IF NOT EXISTS DBT_CI_WH
-  WITH
-  WAREHOUSE_SIZE = 'XSMALL'
-  AUTO_SUSPEND = 60
-  AUTO_RESUME = TRUE
-  INITIALLY_SUSPENDED = TRUE
+  WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE
   COMMENT = 'CI/CD testing warehouse';
 
--- ============================================
--- 4. CREATE ROLES
--- ============================================
-
--- Development role
-CREATE ROLE IF NOT EXISTS DBT_DEV_ROLE
-  COMMENT = 'Role for dbt development';
-
--- Production role (more restricted)
-CREATE ROLE IF NOT EXISTS DBT_PROD_ROLE
-  COMMENT = 'Role for dbt production deployments';
-
--- CI role
-CREATE ROLE IF NOT EXISTS DBT_CI_ROLE
-  COMMENT = 'Role for CI/CD automated testing';
+CREATE WAREHOUSE IF NOT EXISTS DBT_PROD_WH
+  WAREHOUSE_SIZE = 'SMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'Production warehouse for dbt and the scheduled pipeline';
 
 -- ============================================
--- 5. GRANT PRIVILEGES
+-- 2. ROLES
 -- ============================================
+CREATE ROLE IF NOT EXISTS DBT_DEV_ROLE  COMMENT = 'dbt development';
+CREATE ROLE IF NOT EXISTS DBT_CI_ROLE   COMMENT = 'dbt CI (GitHub Actions)';
+CREATE ROLE IF NOT EXISTS DBT_PROD_ROLE COMMENT = 'dbt production deploys and scheduled pipeline';
 
--- Grant warehouse usage
-GRANT USAGE ON WAREHOUSE DBT_DEV_WH TO ROLE DBT_DEV_ROLE;
+-- ACCOUNTADMIN inherits the dbt roles, so it can see and manage what they build
+GRANT ROLE DBT_DEV_ROLE  TO ROLE ACCOUNTADMIN;
+GRANT ROLE DBT_CI_ROLE   TO ROLE ACCOUNTADMIN;
+GRANT ROLE DBT_PROD_ROLE TO ROLE ACCOUNTADMIN;
+
+GRANT USAGE ON WAREHOUSE DBT_DEV_WH  TO ROLE DBT_DEV_ROLE;
+GRANT USAGE ON WAREHOUSE DBT_CI_WH   TO ROLE DBT_CI_ROLE;
 GRANT USAGE ON WAREHOUSE DBT_PROD_WH TO ROLE DBT_PROD_ROLE;
-GRANT USAGE ON WAREHOUSE DBT_CI_WH TO ROLE DBT_CI_ROLE;
 
--- Grant database access (DEV)
--- Database level permissions
-GRANT USAGE ON DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT CREATE SCHEMA ON DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT MONITOR ON DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-
--- Schema level permissions (existing schemas)
-GRANT USAGE ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT CREATE TABLE ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT CREATE VIEW ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT MONITOR ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-
--- Schema level permissions (future schemas)
-GRANT USAGE ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT CREATE TABLE ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT CREATE VIEW ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT MONITOR ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-
--- Table permissions (existing tables)
-GRANT SELECT ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT INSERT ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT UPDATE ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT DELETE ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT TRUNCATE ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT REFERENCES ON ALL TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-
--- Table permissions (future tables)
-GRANT SELECT ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT INSERT ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT UPDATE ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT DELETE ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT TRUNCATE ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT REFERENCES ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-
--- View permissions (existing views)
-GRANT SELECT ON ALL VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT REFERENCES ON ALL VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-
--- View permissions (future views)
-GRANT SELECT ON FUTURE VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT REFERENCES ON FUTURE VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-
--- Materialized view permissions (if you use them)
-GRANT SELECT ON ALL MATERIALIZED VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT SELECT ON FUTURE MATERIALIZED VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-
--- Allow role to manage stages (for seeds and data loading)
-GRANT CREATE STAGE ON ALL SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT CREATE STAGE ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-
--- Grant database access (PROD)
-GRANT USAGE ON DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
-GRANT CREATE SCHEMA ON DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
-GRANT USAGE ON ALL SCHEMAS IN DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
-GRANT CREATE TABLE ON ALL SCHEMAS IN DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
-GRANT CREATE VIEW ON ALL SCHEMAS IN DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
-
--- Grant database access (CI)
-GRANT USAGE ON DATABASE ISOMETRICS_CI TO ROLE DBT_CI_ROLE;
-GRANT CREATE SCHEMA ON DATABASE ISOMETRICS_CI TO ROLE DBT_CI_ROLE;
-GRANT USAGE ON ALL SCHEMAS IN DATABASE ISOMETRICS_CI TO ROLE DBT_CI_ROLE;
-GRANT CREATE TABLE ON ALL SCHEMAS IN DATABASE ISOMETRICS_CI TO ROLE DBT_CI_ROLE;
-GRANT CREATE VIEW ON ALL SCHEMAS IN DATABASE ISOMETRICS_CI TO ROLE DBT_CI_ROLE;
-
--- Grant future privileges (important!)
-GRANT ALL ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT ALL ON FUTURE TABLES IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-GRANT ALL ON FUTURE VIEWS IN DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
-
-GRANT ALL ON FUTURE SCHEMAS IN DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
-GRANT ALL ON FUTURE TABLES IN DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
-GRANT ALL ON FUTURE VIEWS IN DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
+-- Observability marts (cost attribution, HIPAA audit trail, SLA) read SNOWFLAKE.ACCOUNT_USAGE
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE DBT_DEV_ROLE;
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE DBT_CI_ROLE;
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE DBT_PROD_ROLE;
 
 -- ============================================
--- 6. CREATE USER & ASSIGN ROLES
+-- 3. DATABASES AND SCHEMAS
 -- ============================================
+CREATE DATABASE IF NOT EXISTS ISOMETRICS_DEV  COMMENT = 'IsoMetrics development';
+CREATE DATABASE IF NOT EXISTS ISOMETRICS_CI   COMMENT = 'IsoMetrics CI (per-run schemas, dropped after each run)';
+CREATE DATABASE IF NOT EXISTS ISOMETRICS_PROD COMMENT = 'IsoMetrics production';
 
--- Replace YOUR_PASSWORD with a strong password
+CREATE SCHEMA IF NOT EXISTS ISOMETRICS_DEV.RAW_PHI  COMMENT = 'Raw healthcare data - contains PHI - restricted';
+CREATE SCHEMA IF NOT EXISTS ISOMETRICS_DEV.AUDIT    COMMENT = 'HIPAA audit trail and access mapping';
+CREATE SCHEMA IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI COMMENT = 'Raw healthcare data - contains PHI - restricted';
+CREATE SCHEMA IF NOT EXISTS ISOMETRICS_PROD.AUDIT   COMMENT = 'HIPAA audit trail and access mapping';
+
+-- ============================================
+-- 4. SERVICE USERS (key-pair authentication)
+-- ============================================
+-- Snowflake no longer allows password-only sign-in for new users, so these are
+-- TYPE = SERVICE users authenticated by an RSA key pair. Generate the keys
+-- (docs/setup/snowflake_setup.md, step 2) and then run, with the base64 body
+-- of each PUBLIC key (no BEGIN/END lines, no line breaks):
+--
+--   ALTER USER DBT_USER      SET RSA_PUBLIC_KEY = 'MIIBIjANBgkq...';
+--   ALTER USER DBT_PROD_USER SET RSA_PUBLIC_KEY = 'MIIBIjANBgkq...';
 CREATE USER IF NOT EXISTS DBT_USER
-  PASSWORD = 'your@passwor'
+  TYPE = SERVICE
   DEFAULT_ROLE = DBT_DEV_ROLE
   DEFAULT_WAREHOUSE = DBT_DEV_WH
-  COMMENT = 'dbt service account';
+  COMMENT = 'dbt / Python service user for dev and CI';
 
--- Grant roles to user
-GRANT ROLE DBT_DEV_ROLE TO USER DBT_USER;
-GRANT ROLE DBT_PROD_ROLE TO USER DBT_USER;
-GRANT ROLE DBT_CI_ROLE TO USER DBT_USER;
+CREATE USER IF NOT EXISTS DBT_PROD_USER
+  TYPE = SERVICE
+  DEFAULT_ROLE = DBT_PROD_ROLE
+  DEFAULT_WAREHOUSE = DBT_PROD_WH
+  COMMENT = 'Production deploys and the scheduled pipeline';
 
--- Grant roles to your admin user (replace with your username)
-GRANT ROLE DBT_DEV_ROLE TO ROLE ACCOUNTADMIN;
-GRANT ROLE DBT_PROD_ROLE TO ROLE ACCOUNTADMIN;
-GRANT ROLE DBT_CI_ROLE TO ROLE ACCOUNTADMIN;
+GRANT ROLE DBT_DEV_ROLE  TO USER DBT_USER;
+GRANT ROLE DBT_CI_ROLE   TO USER DBT_USER;
+GRANT ROLE DBT_PROD_ROLE TO USER DBT_PROD_USER;
 
 -- ============================================
--- 2. CREATE RAW TABLES (PHI Layer)
+-- 5. RAW TABLES (ISOMETRICS_DEV)
 -- ============================================
-
+-- data_generation/schema.py parses these CREATE TABLE statements to build the
+-- Parquet schemas and the pipeline's COPY column lists: keep them the single
+-- source of truth (add a column here first).
+USE DATABASE ISOMETRICS_DEV;
 USE SCHEMA RAW_PHI;
 
 -- Hospitals (Tenants)
-CREATE OR REPLACE TABLE RAW_PHI.raw_hospitals (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_hospitals (
     hospital_id VARCHAR(50) PRIMARY KEY,
     hospital_name VARCHAR(255) NOT NULL,
     hospital_type VARCHAR(100),
@@ -209,7 +125,8 @@ CREATE OR REPLACE TABLE RAW_PHI.raw_hospitals (
 ) COMMENT = 'Hospital master data - Tenant information';
 
 -- Patients (Contains PHI - Restricted!)
-CREATE OR REPLACE TABLE RAW_PHI.raw_patients (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_patients (
     patient_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50) NOT NULL,  -- CRITICAL for RLS
     mrn VARCHAR(100),  -- Medical Record Number (PHI)
@@ -232,7 +149,8 @@ CREATE OR REPLACE TABLE RAW_PHI.raw_patients (
 ) COMMENT = 'CONTAINS PHI - Restricted Access - HIPAA Protected';
 
 -- Providers
-CREATE OR REPLACE TABLE RAW_PHI.raw_providers (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_providers (
     provider_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50) NOT NULL,  -- CRITICAL for RLS
     npi VARCHAR(10),  -- National Provider Identifier
@@ -250,7 +168,8 @@ CREATE OR REPLACE TABLE RAW_PHI.raw_providers (
 ) COMMENT = 'Provider roster - Physicians, nurses, specialists';
 
 -- Facilities
-CREATE OR REPLACE TABLE RAW_PHI.raw_facilities (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_facilities (
     facility_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50) NOT NULL,  -- CRITICAL for RLS
     facility_name VARCHAR(255),
@@ -264,7 +183,8 @@ CREATE OR REPLACE TABLE RAW_PHI.raw_facilities (
 ) COMMENT = 'Facility/department master data';
 
 -- Diagnoses (Reference table - No PHI)
-CREATE OR REPLACE TABLE RAW_PHI.raw_diagnoses (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_diagnoses (
     diagnosis_code VARCHAR(20) PRIMARY KEY,
     diagnosis_description VARCHAR(500),
     category VARCHAR(100),
@@ -275,7 +195,8 @@ CREATE OR REPLACE TABLE RAW_PHI.raw_diagnoses (
 ) COMMENT = 'ICD-10 diagnosis codes reference';
 
 -- Procedures (Reference table - No PHI)
-CREATE OR REPLACE TABLE RAW_PHI.raw_procedures (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_procedures (
     procedure_code VARCHAR(20) PRIMARY KEY,
     procedure_description VARCHAR(500),
     category VARCHAR(100),
@@ -286,7 +207,8 @@ CREATE OR REPLACE TABLE RAW_PHI.raw_procedures (
 ) COMMENT = 'CPT procedure codes reference';
 
 -- Payers (Reference table - No PHI)
-CREATE OR REPLACE TABLE RAW_PHI.raw_payers (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_payers (
     payer_id VARCHAR(50) PRIMARY KEY,
     payer_name VARCHAR(255),
     payer_type VARCHAR(50),
@@ -297,7 +219,8 @@ CREATE OR REPLACE TABLE RAW_PHI.raw_payers (
 ) COMMENT = 'Insurance payer/plan reference';
 
 -- Encounters (Contains PHI via patient_id)
-CREATE OR REPLACE TABLE RAW_PHI.raw_encounters (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_encounters (
     encounter_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50) NOT NULL,  -- CRITICAL for RLS
     patient_id VARCHAR(50) NOT NULL,
@@ -323,10 +246,12 @@ CREATE OR REPLACE TABLE RAW_PHI.raw_encounters (
 ) COMMENT = 'CONTAINS PHI - Patient encounters - HIPAA Protected';
 
 -- Add clustering for performance
+
 ALTER TABLE RAW_PHI.raw_encounters CLUSTER BY (hospital_id, admission_date);
 
 -- Billing Transactions
-CREATE OR REPLACE TABLE RAW_PHI.raw_billing_transactions (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_billing_transactions (
     transaction_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50) NOT NULL,  -- CRITICAL for RLS
     encounter_id VARCHAR(50) NOT NULL,
@@ -347,10 +272,12 @@ CREATE OR REPLACE TABLE RAW_PHI.raw_billing_transactions (
 ) COMMENT = 'Billing and payment transactions';
 
 -- Add clustering
+
 ALTER TABLE RAW_PHI.raw_billing_transactions CLUSTER BY (hospital_id, transaction_date);
 
 -- Orders (Lab, Radiology, Medications, Procedures)
-CREATE TABLE raw_clinical_orders (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_clinical_orders (
     order_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50), -- RLS key
     encounter_id VARCHAR(50),
@@ -388,7 +315,8 @@ CREATE TABLE raw_clinical_orders (
 );
 
 -- Results (Lab values, vital signs, imaging reports)
-CREATE TABLE raw_clinical_results (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_clinical_results (
     result_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50), -- RLS key
     order_id VARCHAR(50),
@@ -431,7 +359,8 @@ CREATE TABLE raw_clinical_results (
 );
 
 -- Vital Signs (separate from results for granular tracking)
-CREATE TABLE raw_vital_signs (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_vital_signs (
     vital_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50),
     encounter_id VARCHAR(50),
@@ -463,7 +392,8 @@ CREATE TABLE raw_vital_signs (
 );
 
 -- Active and historical diagnoses beyond encounters
-CREATE TABLE raw_problem_list (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_problem_list (
     problem_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50),
     patient_id VARCHAR(50),
@@ -492,7 +422,8 @@ CREATE TABLE raw_problem_list (
 );
 
 -- Actual medication administration (vs. orders)
-CREATE TABLE raw_medication_administration (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_medication_administration (
     admin_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50),
     encounter_id VARCHAR(50),
@@ -523,34 +454,7 @@ CREATE TABLE raw_medication_administration (
     _loaded_at TIMESTAMP_NTZ
 );
 
-CREATE TABLE raw_patient_allergies (
-    allergy_id VARCHAR(50) PRIMARY KEY,
-    hospital_id VARCHAR(50),
-    patient_id VARCHAR(50),
-
-    -- Allergen details
-    allergen_type VARCHAR(50), -- DRUG | FOOD | ENVIRONMENTAL
-    allergen_code VARCHAR(20), -- RxNorm for drugs
-    allergen_name VARCHAR(255),
-
-    -- Reaction details
-    reaction_type VARCHAR(100), -- ANAPHYLAXIS | RASH | GI_UPSET | etc.
-    severity VARCHAR(50), -- MILD | MODERATE | SEVERE | LIFE_THREATENING
-
-    -- Status
-    allergy_status VARCHAR(50), -- ACTIVE | INACTIVE | RESOLVED
-    onset_date DATE,
-    resolution_date DATE,
-
-    -- Documentation
-    documented_by_provider_id VARCHAR(50),
-    documentation_date DATE,
-    clinical_notes TEXT,
-
-    _loaded_at TIMESTAMP_NTZ
-);
-
-CREATE TABLE raw_patient_allergies (
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_patient_allergies (
     allergy_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50),
     patient_id VARCHAR(50),
@@ -578,7 +482,8 @@ CREATE TABLE raw_patient_allergies (
 );
 
 -- Nursing care plans and interventions
-CREATE TABLE raw_care_plans (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_care_plans (
     care_plan_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50),
     encounter_id VARCHAR(50),
@@ -607,7 +512,8 @@ CREATE TABLE raw_care_plans (
 );
 
 -- Patient insurance coverage (missing from current model)
-CREATE TABLE raw_patient_coverage (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_patient_coverage (
     coverage_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50),
     patient_id VARCHAR(50),
@@ -644,7 +550,8 @@ CREATE TABLE raw_patient_coverage (
 );
 
 -- Prior Authorization tracking
-CREATE TABLE raw_prior_authorizations (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_prior_authorizations (
     auth_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50),
     patient_id VARCHAR(50),
@@ -678,51 +585,8 @@ CREATE TABLE raw_prior_authorizations (
 );
 
 -- SDOH screening data (increasingly important for value-based care)
-CREATE TABLE raw_sdoh_screenings (
-    screening_id VARCHAR(50) PRIMARY KEY,
-    hospital_id VARCHAR(50),
-    patient_id VARCHAR(50),
-    encounter_id VARCHAR(50),
-    screening_date DATE,
 
-    -- Housing
-    housing_status VARCHAR(50), -- STABLE | UNSTABLE | HOMELESS | TRANSITIONAL
-    housing_concerns BOOLEAN,
-
-    -- Food security
-    food_insecurity_flag BOOLEAN,
-    difficulty_affording_food BOOLEAN,
-
-    -- Transportation
-    transportation_barriers BOOLEAN,
-
-    -- Financial strain
-    difficulty_paying_utilities BOOLEAN,
-    difficulty_affording_medications BOOLEAN,
-
-    -- Social isolation
-    social_isolation_score INTEGER, -- 0-10 scale
-
-    -- Safety
-    safety_concerns BOOLEAN,
-    intimate_partner_violence_screen BOOLEAN,
-
-    -- Employment
-    employment_status VARCHAR(50),
-
-    -- Education
-    highest_education_level VARCHAR(50),
-    health_literacy_score INTEGER,
-
-    -- Screening tool
-    screening_tool_name VARCHAR(100), -- PRAPARE, AHC, etc.
-
-    -- Referrals made
-    referrals_text TEXT,
-
-    _loaded_at TIMESTAMP_NTZ
-);-- SDOH screening data (increasingly important for value-based care)
-CREATE TABLE raw_sdoh_screenings (
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_sdoh_screenings (
     screening_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50),
     patient_id VARCHAR(50),
@@ -767,8 +631,11 @@ CREATE TABLE raw_sdoh_screenings (
     _loaded_at TIMESTAMP_NTZ
 );
 
+-- SDOH screening data (increasingly important for value-based care)
+
 -- CMS Core Measures tracking
-CREATE TABLE raw_quality_measures (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_quality_measures (
     measure_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50),
     encounter_id VARCHAR(50),
@@ -804,7 +671,8 @@ CREATE TABLE raw_quality_measures (
 );
 
 -- Outpatient referrals and care coordination
-CREATE TABLE raw_referrals (
+
+CREATE TABLE IF NOT EXISTS RAW_PHI.raw_referrals (
     referral_id VARCHAR(50) PRIMARY KEY,
     hospital_id VARCHAR(50),
     patient_id VARCHAR(50),
@@ -834,3 +702,117 @@ CREATE TABLE raw_referrals (
 
     _loaded_at TIMESTAMP_NTZ
 );
+
+-- ============================================
+-- 6. RAW TABLES (ISOMETRICS_PROD) - same definitions
+-- ============================================
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_hospitals                 LIKE ISOMETRICS_DEV.RAW_PHI.raw_hospitals;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_patients                  LIKE ISOMETRICS_DEV.RAW_PHI.raw_patients;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_providers                 LIKE ISOMETRICS_DEV.RAW_PHI.raw_providers;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_facilities                LIKE ISOMETRICS_DEV.RAW_PHI.raw_facilities;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_diagnoses                 LIKE ISOMETRICS_DEV.RAW_PHI.raw_diagnoses;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_procedures                LIKE ISOMETRICS_DEV.RAW_PHI.raw_procedures;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_payers                    LIKE ISOMETRICS_DEV.RAW_PHI.raw_payers;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_encounters                LIKE ISOMETRICS_DEV.RAW_PHI.raw_encounters;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_billing_transactions      LIKE ISOMETRICS_DEV.RAW_PHI.raw_billing_transactions;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_clinical_orders           LIKE ISOMETRICS_DEV.RAW_PHI.raw_clinical_orders;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_clinical_results          LIKE ISOMETRICS_DEV.RAW_PHI.raw_clinical_results;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_vital_signs               LIKE ISOMETRICS_DEV.RAW_PHI.raw_vital_signs;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_problem_list              LIKE ISOMETRICS_DEV.RAW_PHI.raw_problem_list;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_medication_administration LIKE ISOMETRICS_DEV.RAW_PHI.raw_medication_administration;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_patient_allergies         LIKE ISOMETRICS_DEV.RAW_PHI.raw_patient_allergies;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_care_plans                LIKE ISOMETRICS_DEV.RAW_PHI.raw_care_plans;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_patient_coverage          LIKE ISOMETRICS_DEV.RAW_PHI.raw_patient_coverage;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_prior_authorizations      LIKE ISOMETRICS_DEV.RAW_PHI.raw_prior_authorizations;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_sdoh_screenings           LIKE ISOMETRICS_DEV.RAW_PHI.raw_sdoh_screenings;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_quality_measures          LIKE ISOMETRICS_DEV.RAW_PHI.raw_quality_measures;
+CREATE TABLE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.raw_referrals                 LIKE ISOMETRICS_DEV.RAW_PHI.raw_referrals;
+
+-- ============================================
+-- 7. FILE FORMATS AND STAGE (both environments)
+-- ============================================
+-- The stage must exist before `python -m utils.upload_files_to_stage` runs.
+CREATE FILE FORMAT IF NOT EXISTS ISOMETRICS_DEV.RAW_PHI.healthcare_parquet_format
+  TYPE = 'PARQUET' BINARY_AS_TEXT = FALSE TRIM_SPACE = TRUE NULL_IF = ('NULL', 'null', '', 'None');
+CREATE FILE FORMAT IF NOT EXISTS ISOMETRICS_DEV.RAW_PHI.healthcare_csv_format
+  TYPE = 'CSV' FIELD_DELIMITER = ',' SKIP_HEADER = 1 NULL_IF = ('NULL', 'null', '', 'None')
+  EMPTY_FIELD_AS_NULL = TRUE FIELD_OPTIONALLY_ENCLOSED_BY = '"' TRIM_SPACE = TRUE;
+CREATE STAGE IF NOT EXISTS ISOMETRICS_DEV.RAW_PHI.healthcare_data_stage
+  FILE_FORMAT = ISOMETRICS_DEV.RAW_PHI.healthcare_parquet_format
+  COMMENT = 'Landing area for generated healthcare files';
+
+CREATE FILE FORMAT IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.healthcare_parquet_format
+  TYPE = 'PARQUET' BINARY_AS_TEXT = FALSE TRIM_SPACE = TRUE NULL_IF = ('NULL', 'null', '', 'None');
+CREATE FILE FORMAT IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.healthcare_csv_format
+  TYPE = 'CSV' FIELD_DELIMITER = ',' SKIP_HEADER = 1 NULL_IF = ('NULL', 'null', '', 'None')
+  EMPTY_FIELD_AS_NULL = TRUE FIELD_OPTIONALLY_ENCLOSED_BY = '"' TRIM_SPACE = TRUE;
+CREATE STAGE IF NOT EXISTS ISOMETRICS_PROD.RAW_PHI.healthcare_data_stage
+  FILE_FORMAT = ISOMETRICS_PROD.RAW_PHI.healthcare_parquet_format
+  COMMENT = 'Landing area for scheduled pipeline batches';
+
+-- ============================================
+-- 8. GRANTS
+-- ============================================
+
+-- ---- DBT_DEV_ROLE -> ISOMETRICS_DEV ----
+GRANT USAGE, CREATE SCHEMA, MONITOR ON DATABASE ISOMETRICS_DEV TO ROLE DBT_DEV_ROLE;
+GRANT USAGE ON SCHEMA ISOMETRICS_DEV.RAW_PHI TO ROLE DBT_DEV_ROLE;
+GRANT USAGE ON SCHEMA ISOMETRICS_DEV.AUDIT   TO ROLE DBT_DEV_ROLE;
+-- setup_rls_policies creates the policies in RAW_PHI and the mapping table in AUDIT
+GRANT CREATE TABLE             ON SCHEMA ISOMETRICS_DEV.AUDIT   TO ROLE DBT_DEV_ROLE;
+-- read raw; insert + stage for local pipeline runs (orchestration --target dev)
+GRANT SELECT, INSERT ON ALL TABLES    IN SCHEMA ISOMETRICS_DEV.RAW_PHI TO ROLE DBT_DEV_ROLE;
+GRANT SELECT, INSERT ON FUTURE TABLES IN SCHEMA ISOMETRICS_DEV.RAW_PHI TO ROLE DBT_DEV_ROLE;
+GRANT CREATE STAGE ON SCHEMA ISOMETRICS_DEV.RAW_PHI TO ROLE DBT_DEV_ROLE;
+GRANT READ, WRITE ON STAGE ISOMETRICS_DEV.RAW_PHI.healthcare_data_stage TO ROLE DBT_DEV_ROLE;
+GRANT USAGE ON FILE FORMAT ISOMETRICS_DEV.RAW_PHI.healthcare_parquet_format TO ROLE DBT_DEV_ROLE;
+GRANT USAGE ON FILE FORMAT ISOMETRICS_DEV.RAW_PHI.healthcare_csv_format     TO ROLE DBT_DEV_ROLE;
+
+-- ---- DBT_CI_ROLE -> ISOMETRICS_CI (+ read dev raw data) ----
+-- CI builds into per-run schemas in ISOMETRICS_CI and reads sources from
+-- ISOMETRICS_DEV.RAW_PHI (DBT_RAW_DATABASE in dbt_ci.yml).
+GRANT USAGE, CREATE SCHEMA, MONITOR ON DATABASE ISOMETRICS_CI TO ROLE DBT_CI_ROLE;
+GRANT USAGE ON DATABASE ISOMETRICS_DEV TO ROLE DBT_CI_ROLE;
+GRANT USAGE ON SCHEMA ISOMETRICS_DEV.RAW_PHI TO ROLE DBT_CI_ROLE;
+GRANT SELECT ON ALL TABLES    IN SCHEMA ISOMETRICS_DEV.RAW_PHI TO ROLE DBT_CI_ROLE;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA ISOMETRICS_DEV.RAW_PHI TO ROLE DBT_CI_ROLE;
+
+-- ---- DBT_PROD_ROLE -> ISOMETRICS_PROD ----
+GRANT USAGE, CREATE SCHEMA, MONITOR ON DATABASE ISOMETRICS_PROD TO ROLE DBT_PROD_ROLE;
+GRANT USAGE ON SCHEMA ISOMETRICS_PROD.RAW_PHI TO ROLE DBT_PROD_ROLE;
+GRANT USAGE ON SCHEMA ISOMETRICS_PROD.AUDIT   TO ROLE DBT_PROD_ROLE;
+GRANT CREATE TABLE             ON SCHEMA ISOMETRICS_PROD.AUDIT   TO ROLE DBT_PROD_ROLE;
+-- the scheduled pipeline PUTs batches to the stage and COPYs them into raw tables
+GRANT SELECT, INSERT ON ALL TABLES    IN SCHEMA ISOMETRICS_PROD.RAW_PHI TO ROLE DBT_PROD_ROLE;
+GRANT SELECT, INSERT ON FUTURE TABLES IN SCHEMA ISOMETRICS_PROD.RAW_PHI TO ROLE DBT_PROD_ROLE;
+GRANT CREATE STAGE ON SCHEMA ISOMETRICS_PROD.RAW_PHI TO ROLE DBT_PROD_ROLE;
+GRANT READ, WRITE ON STAGE ISOMETRICS_PROD.RAW_PHI.healthcare_data_stage TO ROLE DBT_PROD_ROLE;
+GRANT USAGE ON FILE FORMAT ISOMETRICS_PROD.RAW_PHI.healthcare_parquet_format TO ROLE DBT_PROD_ROLE;
+GRANT USAGE ON FILE FORMAT ISOMETRICS_PROD.RAW_PHI.healthcare_csv_format     TO ROLE DBT_PROD_ROLE;
+
+-- ---- Row access policy privileges (Enterprise Edition or higher) ----
+-- setup_rls_policies creates the policies in each RAW_PHI schema. Row access
+-- policies do not exist on Standard Edition: there these GRANTs fail with
+-- "Unsupported feature", so they are guarded to let the rest of the script finish.
+-- Check: Snowsight -> Admin -> Accounts -> Edition.
+EXECUTE IMMEDIATE $$
+BEGIN
+  GRANT CREATE ROW ACCESS POLICY ON SCHEMA ISOMETRICS_DEV.RAW_PHI  TO ROLE DBT_DEV_ROLE;
+  GRANT CREATE ROW ACCESS POLICY ON SCHEMA ISOMETRICS_PROD.RAW_PHI TO ROLE DBT_PROD_ROLE;
+  RETURN 'Row access policy privileges granted';
+EXCEPTION
+  WHEN STATEMENT_ERROR THEN
+    RETURN 'NOT GRANTED: ' || SQLERRM || ' -- row access policies need Enterprise Edition; '
+        || 'RLS (setup_rls_policies, the dbt post-hooks, create_rls_policies.sql) will not work on this account.';
+END;
+$$;
+
+-- ============================================
+-- 9. VERIFY
+-- ============================================
+SHOW TABLES IN SCHEMA ISOMETRICS_DEV.RAW_PHI;   -- expect 21
+SHOW TABLES IN SCHEMA ISOMETRICS_PROD.RAW_PHI;  -- expect 21
+SHOW GRANTS TO ROLE DBT_CI_ROLE;
+DESC USER DBT_USER;                             -- RSA_PUBLIC_KEY_FP is set once the key is added
+
+SELECT 'IsoMetrics bootstrap complete' AS status;

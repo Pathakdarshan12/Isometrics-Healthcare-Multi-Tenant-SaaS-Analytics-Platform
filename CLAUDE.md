@@ -8,7 +8,7 @@ IsoMetrics Healthcare is a multi-tenant healthcare analytics platform on **Snowf
 
 ## Commands
 
-All dbt commands run from `isometrics_healthcare/` and need a `~/.dbt/profiles.yml` with profile `isometrics_healthcare` (not committed; see `.github/workflows/dbt_ci.yml` for the expected shape). Python tooling reads Snowflake creds from a root `.env` (`SNOWFLAKE_USER/PASSWORD/ACCOUNT/WAREHOUSE/DATABASE/SCHEMA/ROLE`).
+All dbt commands run from `isometrics_healthcare/` and need a `~/.dbt/profiles.yml` with profile `isometrics_healthcare` (not committed; see `.github/workflows/dbt_ci.yml` for the expected shape). Python tooling reads Snowflake creds from a root `.env` (`SNOWFLAKE_USER/ACCOUNT/WAREHOUSE/DATABASE/SCHEMA/ROLE` plus `SNOWFLAKE_PRIVATE_KEY_PATH`, or `SNOWFLAKE_PASSWORD` as fallback). Service users (`DBT_USER`, `DBT_PROD_USER`) are `TYPE = SERVICE` with key-pair auth only; every Python client builds auth kwargs via `utils/snowflake_auth.auth_params()`, so use it for any new connection. Dev profile schema is `DBT_DEV` (→ `DBT_DEV_STAGING`/`DBT_DEV_MARTS`), prod is `DBT_PROD`. New-account walkthrough: `docs/setup/snowflake_setup.md`.
 
 ```bash
 # Setup (Windows venv lives at ./venv)
@@ -45,7 +45,7 @@ python data_generation/generate_data.py --target-encounters 3000000   # size the
 python data_generation/generate_data.py --hospitals 10 --days 7 --format both  # small run, Parquet + CSV
 python -m pytest data_generation/tests                        # generator integrity tests (offline)
 python -m utils.upload_files_to_stage                         # PUT to @RAW_PHI.HEALTHCARE_DATA_STAGE/2023/
-snowsql -f scripts/load_data_to_snowflake.sql                 # COPY INTO all 21 raw tables
+# then run scripts/load_data_to_snowflake.sql as ACCOUNTADMIN (Snowsight / snow sql -f): COPY INTO all 21 raw tables
 streamlit run monitoring_dashboard/app.py
 ```
 
@@ -66,14 +66,14 @@ uvicorn api.main:app --reload
 
 When the warehouse is unavailable, `dbt parse` still validates Jinja/YAML offline; `dbt compile` needs a live connection.
 
-One-time Snowflake bootstrap scripts live in `scripts/` (`isometrics_healthcare_snowflake_setup.sql` → databases/roles/warehouses, `create_rls_policies.sql`, `load_data_to_snowflake.sql`, `metadata_driven_stage_to_raw.sql`).
+Snowflake scripts in `scripts/`, all ACCOUNTADMIN and idempotent, in run order: `isometrics_healthcare_snowflake_setup.sql` (warehouses, roles, service users, 3 DBs, RAW_PHI/AUDIT + 21 raw tables + stage in dev and prod, least-privilege grants incl. `CREATE ROW ACCESS POLICY` on RAW_PHI and `IMPORTED PRIVILEGES` on SNOWFLAKE), `load_data_to_snowflake.sql`, `create_rls_policies.sql` (after `setup_rls_policies`: attaches the dbt-managed policies to raw tables and creates analyst/auditor roles; it does not define policies), `seed_prod_from_dev.sql` (fills empty prod raw tables). `metadata_driven_stage_to_raw.sql` is the alternative loader.
 
 ## Architecture
 
 ### Environments
 Three databases — `ISOMETRICS_DEV`, `ISOMETRICS_CI`, `ISOMETRICS_PROD` — each built by its own role (`DBT_DEV_ROLE`, `DBT_CI_ROLE`, `DBT_PROD_ROLE`). The RLS policies in `macros/setup_rls_policies.sql` grant visibility by `CURRENT_ROLE()` + `CURRENT_DATABASE()` combos, so **behavior differs by role/env**; always consider which role a model is built and queried under.
 
-Sources (`models/staging/*/_*__sources.yml`) read `RAW_PHI` in `env_var('DBT_RAW_DATABASE', target.database)`. CI sets `DBT_RAW_DATABASE=ISOMETRICS_DEV` because CI's own `RAW_PHI` is dropped after each run; prod reads `ISOMETRICS_PROD.RAW_PHI`.
+Sources (`models/staging/*/_*__sources.yml`) read `RAW_PHI` in `env_var('DBT_RAW_DATABASE', target.database)`. CI sets `DBT_RAW_DATABASE=ISOMETRICS_DEV` because CI's database only holds per-run schemas and the policies (`DBT_CI_ROLE` has `SELECT` on dev raw); prod reads `ISOMETRICS_PROD.RAW_PHI`.
 
 ### Ingestion (outside dbt)
 Two load paths into `RAW_PHI.raw_*`: `scripts/load_data_to_snowflake.sql` (explicit `COPY INTO` with casts for all 21 tables; the one the README Quick Start uses) and `scripts/metadata_driven_stage_to_raw.sql` (`SOURCE_FILE_CONFIG` + `SP_LOAD_RAW_TABLE` / `SP_LOAD_ALL_RAW_TABLES`, currently configured for 9 sources). Adding a raw source means: DDL in `isometrics_healthcare_snowflake_setup.sql`, a generator method + `main()` call in `data_generation/generate_data.py`, the file in `utils/csv_to_parquet.py`, a `COPY` block, and a dbt source entry. Generator output columns must match the raw DDL exactly. `orchestration/isometrics_orchestration.py` is only a commented outline of the intended sequence (generate → stage → SP → dbt run/test/snapshot/docs); there is no working orchestrator.
@@ -91,7 +91,7 @@ Layer defaults (materialization, schema, tags, `meta.sla_hours`) are set in `dbt
 - Every model must carry `hospital_id`; generic test `has_tenant_column` and singular `assert_rls_column_exists` enforce this.
 - Staging and mart models attach RLS with `post_hook=["{{ apply_rls_policy() }}"]`. The macro checks `INFORMATION_SCHEMA.POLICY_REFERENCES`, skips if already attached (incremental tables persist), uses `ALTER VIEW` vs `ALTER TABLE` by materialization, and errors if a different policy is attached. The policy must exist first (`setup_rls_policies`).
 - `assert_rls_policy_applied` and `assert_rls_column_exists` build their check lists from the dbt graph (all staging/marts models except `staging/reference`), so new models are covered automatically. Never hard-code schema names in tests: dbt builds into `<target schema>_<layer>` (e.g. `DBT_DEV_MARTS`).
-- Policy bodies are in `rls_hospital_isolation_body()` / `rls_phi_access_body()` in `macros/setup_rls_policies.sql`; `setup_rls_policies` creates-if-missing then `ALTER ... SET BODY`, so edit the body there and rerun. In a policy subquery, never compare `table.hospital_id = hospital_id` — the unqualified name binds to the table column, not the policy argument (see the derived-table pattern used there).
+- Policy bodies are in `rls_hospital_isolation_body()` / `rls_phi_access_body()` in `macros/setup_rls_policies.sql`; `setup_rls_policies` creates-if-missing then `ALTER ... SET BODY`, so edit the body there and rerun. Write mapping lookups as `hospital_id IN (SELECT m.hospital_id FROM ... m WHERE ...)`: never put a derived table (subquery in `FROM`) inside a policy's subquery. Snowflake creates the policy but fails every query that reaches that branch ("Unsupported subquery type"). Test policy changes by querying as the affected role, not just by creating the policy.
 - Joins and window partitions across tenant-scoped entities must include `hospital_id`; `no_cross_tenant_leakage` (generic) and `assert_no_cross_hospital_*` (singular) check this.
 - Flag PHI with `meta: {contains_phi: true, phi_fields: [...]}`; use `no_phi_in_column` on free-text columns. Staging applies HIPAA Safe Harbor: birth year only, ages top-coded at 90, `deidentify_zipcode` (3 digits, restricted prefixes → `000`).
 
@@ -101,7 +101,7 @@ Clinical scoring macros (`calculate_apache_ii_score`, `calculate_sofa_score`, `c
 Write macro docstrings as Jinja comments (`{# #}`), never SQL `/* */`: Jinja renders inside SQL comments, so a usage example like `{{ my_macro(...) }}` in a `/* */` docstring makes the macro call itself forever.
 
 ### CI/CD
-- `.github/workflows/dbt_ci.yml` — on push/PR to `main`: writes profile from secrets, bootstraps schemas via SnowSQL, `setup_rls_policies`, runs staging → intermediate → marts, then all tests, RLS verification and isolation tests (all blocking), and drops the CI schemas.
+- `.github/workflows/dbt_ci.yml` — on push/PR to `main`: writes a key-pair profile from secrets (no SnowSQL), `setup_rls_policies`, runs staging → intermediate → marts, then all tests, RLS verification and isolation tests (all blocking), and `dbt run-operation drop_ci_schemas` drops `<CI_SCHEMA>` and every `<CI_SCHEMA>_*` schema (shared `RAW_PHI`/`AUDIT` stay). Secrets: `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_PROD_USER`, `SNOWFLAKE_PROD_PRIVATE_KEY`.
 - `.github/workflows/dbt_prod.yml` — `workflow_run` after "dbt CI" succeeds on `main` (or manual dispatch with optional full refresh); checks out the exact SHA CI tested and deploys to `ISOMETRICS_PROD`.
 - `.github/workflows/api_ci.yml` — runs `api/tests` on changes under `api/`.
 - Singular tests are selected by name (`dbt test --select assert_x`); `test_name:` only matches generic tests.

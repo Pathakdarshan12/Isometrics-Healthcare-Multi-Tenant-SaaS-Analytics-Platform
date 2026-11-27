@@ -34,7 +34,7 @@ jobs:
     env:
       SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
       SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_PROD_USER }}
-      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PROD_PASSWORD }}
+      SNOWFLAKE_PRIVATE_KEY_PATH: /home/runner/.snowflake/rsa_key.p8
       SNOWFLAKE_ROLE: DBT_PROD_ROLE
       SNOWFLAKE_WAREHOUSE: DBT_PROD_WH
       SNOWFLAKE_DATABASE: ISOMETRICS_PROD
@@ -55,9 +55,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r orchestration/requirements.txt
 
-      - name: 🔧 Setup dbt profile
+      - name: 🔧 Setup dbt profile (key-pair auth)
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PROD_PRIVATE_KEY }}
         run: |
-          mkdir -p ~/.dbt
+          mkdir -p ~/.dbt ~/.snowflake
+          printf '%s\n' "$SNOWFLAKE_PRIVATE_KEY" > ~/.snowflake/rsa_key.p8
+          chmod 600 ~/.snowflake/rsa_key.p8
           cat <<EOF > ~/.dbt/profiles.yml
           isometrics_healthcare:
             target: prod
@@ -66,11 +70,11 @@ jobs:
                 type: snowflake
                 account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
                 user: ${{ secrets.SNOWFLAKE_PROD_USER }}
-                password: ${{ secrets.SNOWFLAKE_PROD_PASSWORD }}
+                private_key_path: $HOME/.snowflake/rsa_key.p8
                 role: DBT_PROD_ROLE
                 database: ISOMETRICS_PROD
                 warehouse: DBT_PROD_WH
-                schema: marts
+                schema: DBT_PROD
                 threads: 8
                 query_tag: scheduled_pipeline
           EOF

@@ -6,7 +6,7 @@ Agreement requires that its PHI be returned or destroyed within 30 days of
 termination, with evidence of destruction.
 
 > **Conventions.** `MARTS` / `STAGING` mean the dbt schemas for the target (prod:
-> `MARTS_MARTS` / `MARTS_STAGING`); see
+> `DBT_PROD_MARTS` / `DBT_PROD_STAGING`); see
 > [data_model.md](../architecture/data_model.md#schema-naming).
 
 Offboarding has three stages: **revoke access immediately**, **export data if the

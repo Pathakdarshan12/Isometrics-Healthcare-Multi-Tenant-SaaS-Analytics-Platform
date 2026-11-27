@@ -25,7 +25,8 @@
   {% else %}
 
     -- Return empty result set (test passes)
-    select 1
+    -- named columns: store_failures materializes this as a table
+    select null as model_name, null as error_message, null as existing_columns
     where 1 = 0
 
   {% endif %}

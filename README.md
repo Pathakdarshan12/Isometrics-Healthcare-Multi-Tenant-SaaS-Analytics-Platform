@@ -88,16 +88,10 @@ CASE
   WHEN CURRENT_ROLE() LIKE 'HOSPITAL_%_ANALYST' AND CURRENT_ROLE() NOT LIKE '%_PHI_ANALYST' THEN
     hospital_id = REGEXP_REPLACE(CURRENT_ROLE(), 'HOSPITAL_(.*)_ANALYST', '\\1')
   WHEN CURRENT_ROLE() = 'HOSPITAL_ANALYST' THEN
-    EXISTS (
-      SELECT 1
-      FROM (
-        -- rename the column: an unqualified hospital_id inside a subquery binds
-        -- to the table's own column (always true), not the policy argument
-        SELECT hospital_id AS mapped_hospital_id, user_name, access_start_date, access_end_date
-        FROM AUDIT.user_hospital_mapping
-      ) m
+    hospital_id IN (                -- policy argument, outside the subquery
+      SELECT m.hospital_id          -- mapping column, qualified inside it
+      FROM AUDIT.user_hospital_mapping m
       WHERE m.user_name = CURRENT_USER()
-        AND m.mapped_hospital_id = hospital_id
         AND CURRENT_DATE() BETWEEN m.access_start_date AND m.access_end_date
     )
   ELSE FALSE   -- fail closed
@@ -599,7 +593,7 @@ python -m pytest api/tests               # offline tests, no Snowflake needed
 
 Datasets: `clinical-quality`, `core-measures`, `early-warning`, `laboratory-quality`, `medication-safety`, `financial-performance`, `prior-authorizations`, `operational`, `care-coordination`, `cost-attribution`.
 
-Configuration (`.env`): `SNOWFLAKE_ACCOUNT/USER/PASSWORD/WAREHOUSE/DATABASE`, `ISOMETRICS_MARTS_SCHEMA` (default `DBT_DEV_MARTS`), `ISOMETRICS_API_KEYS`.
+Configuration (`.env`): `SNOWFLAKE_ACCOUNT/USER/WAREHOUSE/DATABASE`, `SNOWFLAKE_PRIVATE_KEY_PATH` (or `SNOWFLAKE_PASSWORD`), `ISOMETRICS_MARTS_SCHEMA` (default `DBT_DEV_MARTS`), `ISOMETRICS_API_KEYS`.
 
 ---
 
@@ -690,8 +684,8 @@ Clinical, financial, quality, care-coordination and prior-authorization tables a
 # Upload the generated Parquet to the stage (@RAW_PHI.HEALTHCARE_DATA_STAGE/2023/), creds from .env
 python -m utils.upload_files_to_stage
 
-# Load all 21 raw tables
-snowsql -f scripts/load_data_to_snowflake.sql
+# Load all 21 raw tables: run scripts/load_data_to_snowflake.sql as ACCOUNTADMIN
+# (Snowsight worksheet -> Run All, or `snow sql -f`)
 ```
 
 **Alternative**: Metadata-driven ingestion via `scripts/metadata_driven_stage_to_raw.sql` (stored procedures with configuration tables).
@@ -767,61 +761,68 @@ snowsql -f scripts/load_data_to_snowflake.sql
 - dbt-core 1.11.0
 - Git
 
-### **Installation** (5 minutes)
+### **Installation**
+
+**Full walkthrough for a new account: [docs/setup/snowflake_setup.md](docs/setup/snowflake_setup.md)**
+(bootstrap, key pairs, data load, dbt, RLS, prod seed, GitHub secrets, schedule).
+Snowflake service users authenticate with an RSA key pair; password-only sign-in is
+no longer available for new users.
 
 ```bash
-# 1. Clone repository
+# 1. Clone and install
 git clone https://github.com/yourusername/isometrics-healthcare.git
 cd isometrics-healthcare
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scriptsctivate
+pip install -r requirements.txt
 
-# 2. Setup Snowflake
-snowsql -f scripts/isometrics_healthcare_snowflake_setup.sql
+# 2. Snowflake (as ACCOUNTADMIN in a Snowsight worksheet)
+#    scripts/isometrics_healthcare_snowflake_setup.sql   -> roles, users, DBs, raw tables, stage
+#    then set each service user's RSA public key (setup guide, step 2)
 
-# 3. Configure dbt
-mkdir -p ~/.dbt
+# 3. ~/.dbt/profiles.yml
 cat > ~/.dbt/profiles.yml <<EOF
 isometrics_healthcare:
   target: dev
   outputs:
     dev:
       type: snowflake
-      account: YOUR_ACCOUNT
+      account: ORGNAME-ACCOUNTNAME
       user: DBT_USER
-      password: YOUR_PASSWORD
+      private_key_path: ~/.snowflake/dbt_user.p8
       role: DBT_DEV_ROLE
       database: ISOMETRICS_DEV
       warehouse: DBT_DEV_WH
-      schema: DBT_DEV_STAGING
+      schema: DBT_DEV            # -> DBT_DEV_STAGING / DBT_DEV_MARTS
       threads: 4
 EOF
 
-# 4. Python environment + credentials
-python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+# 4. .env for the Python tools
 cat > .env <<EOF
-SNOWFLAKE_ACCOUNT=YOUR_ACCOUNT
+SNOWFLAKE_ACCOUNT=ORGNAME-ACCOUNTNAME
 SNOWFLAKE_USER=DBT_USER
-SNOWFLAKE_PASSWORD=YOUR_PASSWORD
+SNOWFLAKE_PRIVATE_KEY_PATH=~/.snowflake/dbt_user.p8
 SNOWFLAKE_ROLE=DBT_DEV_ROLE
 SNOWFLAKE_WAREHOUSE=DBT_DEV_WH
 SNOWFLAKE_DATABASE=ISOMETRICS_DEV
 SNOWFLAKE_SCHEMA=RAW_PHI
+ISOMETRICS_MARTS_SCHEMA=DBT_DEV_MARTS
 EOF
 
-# 5. Generate and load data (from the repo root)
+# 5. Generate and load data
 python data_generation/generate_data.py          # Parquet -> data_generation/parquet/
 python -m utils.upload_files_to_stage
-snowsql -f scripts/load_data_to_snowflake.sql
+#    then run scripts/load_data_to_snowflake.sql (Snowsight)
 
-# 6. Run dbt
+# 6. Build
 cd isometrics_healthcare
 dbt deps
 dbt run-operation setup_rls_policies
-dbt run
-dbt test
+dbt run && dbt snapshot && dbt test
 cd ..
+#    then run scripts/create_rls_policies.sql (raw-table RLS + analyst roles)
+#    and scripts/seed_prod_from_dev.sql before the first prod deploy
 
-# 7. Launch monitoring dashboard / API
+# 7. Dashboard / API
 streamlit run monitoring_dashboard/app.py
 uvicorn api.main:app --reload
 ```

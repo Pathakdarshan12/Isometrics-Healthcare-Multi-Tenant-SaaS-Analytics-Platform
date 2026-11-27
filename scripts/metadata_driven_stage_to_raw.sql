@@ -644,6 +644,10 @@ BEGIN
             CASE
                 WHEN fcm.transformation_rule IS NOT NULL THEN fcm.transformation_rule
                 WHEN fcm.default_value IS NOT NULL THEN fcm.default_value
+                -- Parquet timestamps arrive as int64 microseconds (no USE_LOGICAL_TYPE):
+                -- a plain ::TIMESTAMP_NTZ would read them as seconds
+                WHEN dfm.data_type LIKE 'TIMESTAMP%'
+                    THEN 'TO_TIMESTAMP_NTZ($1:' || fcm.file_column_name || '::NUMBER, 6)'
                 ELSE '$1:' || fcm.file_column_name || '::' || dfm.data_type ||
                     CASE
                         WHEN dfm.data_type IN ('VARCHAR', 'STRING') THEN '(' || COALESCE(dfm.length, 500) || ')'

@@ -36,6 +36,8 @@ class Settings:
     api_clients: dict[str, ApiClient] = field(default_factory=dict)
     pool_size: int = 4
     max_page_size: int = 1000
+    # key-pair auth (preferred); falls back to snowflake_password when unset
+    snowflake_private_key_path: str | None = None
 
 
 def _identifier(value: str, name: str) -> str:
@@ -84,6 +86,7 @@ def load_settings() -> Settings:
         api_clients=parse_api_clients(os.getenv('ISOMETRICS_API_KEYS')),
         pool_size=int(os.getenv('ISOMETRICS_API_POOL_SIZE', '4')),
         max_page_size=int(os.getenv('ISOMETRICS_API_MAX_PAGE_SIZE', '1000')),
+        snowflake_private_key_path=os.getenv('SNOWFLAKE_PRIVATE_KEY_PATH'),
     )
 
 

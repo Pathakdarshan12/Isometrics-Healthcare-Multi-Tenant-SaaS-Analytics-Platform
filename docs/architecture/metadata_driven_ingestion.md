@@ -32,7 +32,7 @@ excluded from the freshness SLA (`freshness: null` in the source YAML).
 ```bash
 python data_generation/generate_data.py     # Parquet -> data_generation/parquet/ (add --format both for CSV)
 python -m utils.upload_files_to_stage       # PUT -> @RAW_PHI.HEALTHCARE_DATA_STAGE/2023/
-snowsql -f scripts/load_data_to_snowflake.sql
+# run scripts/load_data_to_snowflake.sql as ACCOUNTADMIN (Snowsight worksheet or snow sql -f)
 ```
 
 `upload_files_to_stage` reads credentials from `.env` and takes `--folder`,
